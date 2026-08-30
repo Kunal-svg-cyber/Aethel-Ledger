@@ -4,7 +4,9 @@ A distributed, event-sourced financial ledger engine built from scratch in Go �
 
 ## Status
 
-**Week 1-2 of 8 — concurrency core.** The in-memory, thread-safe ledger engine is implemented, tested under the race detector, stress-tested for invariant conservation, and proven deadlock-free under adversarial concurrent load. Everything below this point is real and runnable. The gRPC gateway, idempotency layer, WAL, and audit worker are planned for the following weeks (see Roadmap).
+**Week 3-4 of 8 — gRPC gateway + idempotency layer.** The concurrency engine (week 1-2) is unchanged and still fully tested. On top of it: a protobuf schema, generated gRPC client/server code, a `LedgerServer` implementation wiring RPCs to the engine, and an idempotency layer that makes `Transfer` safe against client retries. The WAL, Redis Streams event bus, and audit worker are planned for weeks 5-6 (see Roadmap).
+
+**Verification note:** the `internal/ledger` package (week 1-2) has been fully built and tested — `go vet`, `go test -race`, and the benchmark all ran clean. The week 3-4 additions (`internal/server`, `cmd/server`, the generated `internal/genproto` code) were generated with `protoc` + `protoc-gen-go` + `protoc-gen-go-grpc` and checked for syntax correctness and exact interface-signature matching against the generated code, but have not yet been build-verified end-to-end against the real `google.golang.org/grpc` module (that requires network access to the Go module proxy, which wasn't available in the environment that assembled this). Run `go mod tidy && go build ./...` after uploading — this resolves real dependency versions from the public proxy and will surface anything that needs fixing.
 
 ## Why this exists
 
@@ -76,10 +78,31 @@ go run ./cmd/server
 | Durable storage | Neon Postgres (free tier) | Serverless, async-batched WAL sink |
 | Dev environment | GitHub Codespaces | Zero local installs, fully browser-based |
 
+## gRPC API
+
+Defined in [`proto/ledger/v1/ledger.proto`](proto/ledger/v1/ledger.proto), implemented in [`internal/server/server.go`](internal/server/server.go).
+
+- `Deposit(account_id, amount)` — credits an account, creating it on first touch.
+- `Transfer(from_account_id, to_account_id, amount, idempotency_key)` — moves funds via the engine's deadlock-free `Transfer`. Requires a client-generated `idempotency_key`; a retried request with the same key returns the original result (`replayed = true`) instead of moving funds again.
+- `GetBalance(account_id)` — reads current balance (0 for an untouched account, not an error).
+
+The idempotency layer ([`internal/idempotency/store.go`](internal/idempotency/store.go)) is behind a `Store` interface with an in-memory implementation for now; it's built to swap directly for a Redis-backed implementation without touching the server code.
+
+`internal/server/server_test.go` includes `TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending`, which submits the same idempotency key twice and asserts funds moved exactly once — the core correctness property of this layer.
+
+## Running the server
+
+```bash
+go mod tidy   # resolves google.golang.org/grpc and google.golang.org/protobuf from the public proxy
+go run ./cmd/server
+# in another terminal, if you have grpcurl:
+grpcurl -plaintext -d '{"account_id":"alice","amount":1000}' localhost:50051 ledger.v1.LedgerService/Deposit
+```
+
 ## Roadmap
 
 - [x] Week 1-2: sharded-lock concurrency engine, race-detector test suite, deadlock-freedom proof, benchmarks
-- [ ] Week 3-4: protobuf schema, gRPC gateway, bloom filter + Redis idempotency layer
+- [x] Week 3-4: protobuf schema, gRPC gateway, in-memory idempotency layer (Redis swap-in planned)
 - [ ] Week 5-6: local WAL, async batch flush to Neon Postgres, Redis Streams event bus, audit worker
 - [ ] Week 7: load generator, throughput/latency measurement, basic observability
 - [ ] Week 8: docs, demo recording, final polish
