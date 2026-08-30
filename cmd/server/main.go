@@ -1,22 +1,39 @@
-// Command server will host the gRPC gateway (weeks 3-4) in front of the
-// ledger engine. For now it just proves the module wires together inside
-// Codespaces.
+// Command server starts the Aethel Ledger gRPC gateway in front of the
+// in-memory concurrency engine.
 package main
 
 import (
-	"context"
-	"fmt"
+	"log"
+	"net"
 
-	"github.com/YOUR_USERNAME/aethel-ledger/internal/ledger"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
+
+	ledgerv1 "github.com/Kunal-svg-cyber/aethel-ledger/internal/genproto/ledger/v1"
+	"github.com/Kunal-svg-cyber/aethel-ledger/internal/idempotency"
+	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
+	"github.com/Kunal-svg-cyber/aethel-ledger/internal/server"
 )
 
+const listenAddr = ":50051"
+
 func main() {
-	e := ledger.NewEngine(nil)
-	ctx := context.Background()
+	engine := ledger.NewEngine(nil)             // week 5-6 wires a real WAL channel here
+	idemStore := idempotency.NewInMemoryStore() // week 3-4 continuation swaps for Redis
 
-	bal, _ := e.Deposit(ctx, "alice", 10_000)
-	fmt.Printf("Aethel Ledger engine online. alice balance = %d\n", bal)
+	ledgerServer := server.New(engine, idemStore)
 
-	_ = e.Transfer(ctx, "alice", "bob", 2_500)
-	fmt.Printf("after transfer: alice=%d bob=%d\n", e.Balance("alice"), e.Balance("bob"))
+	grpcServer := grpc.NewServer()
+	ledgerv1.RegisterLedgerServiceServer(grpcServer, ledgerServer)
+	reflection.Register(grpcServer) // enables grpcurl / grpcui without needing the .proto file on the client
+
+	lis, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatalf("failed to listen on %s: %v", listenAddr, err)
+	}
+
+	log.Printf("Aethel Ledger gRPC server listening on %s", listenAddr)
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("grpc server error: %v", err)
+	}
 }
