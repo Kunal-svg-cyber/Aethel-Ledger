@@ -175,6 +175,22 @@ func (e *Engine) Transfer(_ context.Context, from, to string, amount int64) erro
 	return nil
 }
 
+// Account reports whether id has ever been touched, without creating it.
+// Used by the idempotency layer to distinguish "unknown account" from
+// "balance zero" where that distinction matters.
+func (e *Engine) Account(id string) (balance int64, exists bool) {
+	s := e.shardFor(id)
+	s.mu.RLock()
+	a, ok := s.accounts[id]
+	s.mu.RUnlock()
+	if !ok {
+		return 0, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.balance, true
+}
+
 // Balance returns the current balance for id (0 if it has never been touched).
 func (e *Engine) Balance(id string) int64 {
 	a := e.getOrCreate(id)
