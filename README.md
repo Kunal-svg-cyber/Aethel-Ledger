@@ -4,9 +4,12 @@ A distributed, event-sourced financial ledger engine built from scratch in Go �
 
 ## Status
 
-**Week 3-4 of 8 — gRPC gateway + idempotency layer.** The concurrency engine (week 1-2) is unchanged and still fully tested. On top of it: a protobuf schema, generated gRPC client/server code, a `LedgerServer` implementation wiring RPCs to the engine, and an idempotency layer that makes `Transfer` safe against client retries. The WAL, Redis Streams event bus, and audit worker are planned for weeks 5-6 (see Roadmap).
+**Week 5-6 of 8 — persistence layer.** On top of the concurrency engine (week 1-2) and gRPC gateway (week 3-4): an async, batching write-ahead log; a Postgres-backed durable store; a Redis Streams event bus; and a background audit worker that independently re-derives every balance from the event log and checks the global conservation invariant. See Roadmap below for what's fully verified vs. what still needs a real build against your own Postgres/Redis.
 
-**Verification note:** the `internal/ledger` package (week 1-2) has been fully built and tested — `go vet`, `go test -race`, and the benchmark all ran clean. The week 3-4 additions (`internal/server`, `cmd/server`, the generated `internal/genproto` code) were generated with `protoc` + `protoc-gen-go` + `protoc-gen-go-grpc` and checked for syntax correctness and exact interface-signature matching against the generated code, but have not yet been build-verified end-to-end against the real `google.golang.org/grpc` module (that requires network access to the Go module proxy, which wasn't available in the environment that assembled this). Run `go mod tidy && go build ./...` after uploading — this resolves real dependency versions from the public proxy and will surface anything that needs fixing.
+**Verification note, by package:**
+- `internal/ledger` (week 1-2): fully built and tested — `go vet`, `go test -race`, benchmark, all clean.
+- `internal/wal`, `internal/streaming`, `internal/audit` (week 5-6): fully built and tested with `go test -race`, **including** the Postgres driver dependency (`github.com/lib/pq`) — this one resolves cleanly because it's a plain `github.com` module with no further dependencies, unlike `google.golang.org/grpc`'s chain (see below). The one test that needs a real database (`TestPostgresStore_FlushAndDedup`) is written as an integration test that skips unless you set `DATABASE_URL` — run it against your own Neon connection string to verify the actual Postgres path.
+- `internal/server`, `cmd/server`, `internal/genproto` (week 3-4): syntax-checked and matched field-for-field against the generated protobuf code, but not build-verified against the real `google.golang.org/grpc` module — that module's dependency chain needs the public Go module proxy, which the environment that assembled this doesn't have access to. Your machine does; run `go mod tidy && go build ./...` and treat that as the real first test of this part.
 
 ## Why this exists
 
@@ -99,10 +102,25 @@ go run ./cmd/server
 grpcurl -plaintext -d '{"account_id":"alice","amount":1000}' localhost:50051 ledger.v1.LedgerService/Deposit
 ```
 
+## Persistence layer (week 5-6)
+
+- **WAL** ([`internal/wal/wal.go`](internal/wal/wal.go)) — drains the engine's event channel, batches events, and flushes on either a batch-size or time threshold (whichever comes first), so the hot transfer path never blocks on I/O. Tested for both trigger conditions and for flush-on-shutdown.
+- **PostgresStore** ([`internal/wal/postgres_store.go`](internal/wal/postgres_store.go)) — durable sink for Neon. Multi-row batched inserts with `ON CONFLICT (seq) DO NOTHING`, so a retried flush after a transient failure can't create duplicate rows.
+- **Redis Streams event bus** ([`internal/streaming/redis_streams.go`](internal/streaming/redis_streams.go)) — publishes and reads back events via Upstash's REST API using only `net/http`, no third-party Redis client. Tested against a mock HTTP server covering the exact request/response shapes Upstash's API uses.
+- **Audit worker** ([`internal/audit/worker.go`](internal/audit/worker.go)) — the "real-time mathematical auditing" piece. It never reads the engine's live balances; it *only* replays the append-only event log into its own independently-derived account map, then checks that the sum of all derived balances equals total deposits ever made — the definition of "transfers only move value, never create or destroy it." Tested for conservation holding, and for what a genuine drift would look like.
+- **Local fallback, zero config needed:** with no `DATABASE_URL` or Upstash credentials set, the server still runs the full pipeline — WAL flushes to an in-memory store, and the audit worker is wired directly in-process via `audit.LocalPublisher` instead of through Redis. Set the environment variables below to switch to the real Neon/Upstash path.
+
+```bash
+export DATABASE_URL="postgres://user:pass@your-neon-host/dbname?sslmode=require"
+export UPSTASH_REDIS_REST_URL="https://your-db.upstash.io"
+export UPSTASH_REDIS_REST_TOKEN="your-upstash-token"
+go run ./cmd/server
+```
+
 ## Roadmap
 
 - [x] Week 1-2: sharded-lock concurrency engine, race-detector test suite, deadlock-freedom proof, benchmarks
 - [x] Week 3-4: protobuf schema, gRPC gateway, in-memory idempotency layer (Redis swap-in planned)
-- [ ] Week 5-6: local WAL, async batch flush to Neon Postgres, Redis Streams event bus, audit worker
+- [x] Week 5-6: async batching WAL, Neon Postgres store, Redis Streams event bus, audit worker with independent invariant checking
 - [ ] Week 7: load generator, throughput/latency measurement, basic observability
 - [ ] Week 8: docs, demo recording, final polish
