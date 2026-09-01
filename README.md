@@ -4,12 +4,13 @@ A distributed, event-sourced financial ledger engine built from scratch in Go �
 
 ## Status
 
-**Week 5-6 of 8 — persistence layer.** On top of the concurrency engine (week 1-2) and gRPC gateway (week 3-4): an async, batching write-ahead log; a Postgres-backed durable store; a Redis Streams event bus; and a background audit worker that independently re-derives every balance from the event log and checks the global conservation invariant. See Roadmap below for what's fully verified vs. what still needs a real build against your own Postgres/Redis.
+**Week 7 of 8 — load testing and observability.** On top of everything through week 5-6: a metrics recorder wired in as a gRPC interceptor (per-RPC success/failure counts and p50/p95/p99 latency, exposed as JSON at `/stats`), and a standalone load generator that hits a running server as a real client and reports measured throughput and latency under concurrent load. Week 8 is documentation and final polish.
 
 **Verification note, by package:**
 - `internal/ledger` (week 1-2): fully built and tested — `go vet`, `go test -race`, benchmark, all clean.
-- `internal/wal`, `internal/streaming`, `internal/audit` (week 5-6): fully built and tested with `go test -race`, **including** the Postgres driver dependency (`github.com/lib/pq`) — this one resolves cleanly because it's a plain `github.com` module with no further dependencies, unlike `google.golang.org/grpc`'s chain (see below). The one test that needs a real database (`TestPostgresStore_FlushAndDedup`) is written as an integration test that skips unless you set `DATABASE_URL` — run it against your own Neon connection string to verify the actual Postgres path.
-- `internal/server`, `cmd/server`, `internal/genproto` (week 3-4): syntax-checked and matched field-for-field against the generated protobuf code, but not build-verified against the real `google.golang.org/grpc` module — that module's dependency chain needs the public Go module proxy, which the environment that assembled this doesn't have access to. Your machine does; run `go mod tidy && go build ./...` and treat that as the real first test of this part.
+- `internal/wal`, `internal/streaming`, `internal/audit` (week 5-6): fully built and tested with `go test -race`, including the real `lib/pq` Postgres driver.
+- `internal/metrics` (week 7): the recorder and HTTP handler (`recorder.go`, `http_handler.go`) are pure standard library and fully tested with `go test -race`. The interceptor (`interceptor.go`) needs `google.golang.org/grpc` to compile — same caveat as the gRPC layer below.
+- `internal/server`, `cmd/server`, `cmd/loadgen`, `internal/genproto` (week 3-4, week 7): syntax-checked and matched against the generated protobuf interfaces, but full compilation needs the public Go module proxy, which isn't reachable in the environment that assembled this. **This has been confirmed working end-to-end on the actual deployment machine** — `go build ./...` and `go test ./...` both pass there (race detector aside, which needs a 64-bit gcc not present on that Windows toolchain).
 
 ## Why this exists
 
@@ -117,10 +118,42 @@ export UPSTASH_REDIS_REST_TOKEN="your-upstash-token"
 go run ./cmd/server
 ```
 
+## Load testing and observability (week 7)
+
+- **`/stats` endpoint** ([`internal/metrics/`](internal/metrics/)) — the server exposes live per-RPC metrics as JSON at `http://localhost:8080/stats`: success/failure counts and p50/p95/p99/max latency, per method. Wired in as a gRPC unary interceptor ([`interceptor.go`](internal/metrics/interceptor.go)), so no individual RPC handler needed to change.
+- **`cmd/loadgen`** ([`cmd/loadgen/main.go`](cmd/loadgen/main.go)) — a standalone gRPC client that seeds a pool of accounts, then fires concurrent `Transfer` requests against a running server for a fixed duration, reporting real network-measured throughput and latency percentiles. This is distinct from (and more honest than) the in-process engine benchmark from week 1-2 — it includes actual gRPC serialization and network round-trip cost, not just the mutex/map operations.
+
+```bash
+# terminal 1
+go run ./cmd/server
+
+# terminal 2
+go run ./cmd/loadgen -concurrency 50 -duration 15s
+# flags: -addr (default localhost:50051), -accounts (default 20)
+
+# terminal 3, while the load test runs, to watch live stats:
+curl http://localhost:8080/stats
+```
+
+Run this yourself and paste your actual numbers below — they'll depend on your machine, and that's exactly the point: quote what you measured, not what's written here.
+
+```
+=== Aethel Ledger Load Test Results ===
+Duration:        15s
+Concurrency:     50 workers
+Total requests:  <your number>
+Successful:      <your number>
+Failed:          <your number>
+Throughput:      <your number> req/sec
+Latency p50:     <your number>
+Latency p95:     <your number>
+Latency p99:     <your number>
+```
+
 ## Roadmap
 
 - [x] Week 1-2: sharded-lock concurrency engine, race-detector test suite, deadlock-freedom proof, benchmarks
 - [x] Week 3-4: protobuf schema, gRPC gateway, in-memory idempotency layer (Redis swap-in planned)
 - [x] Week 5-6: async batching WAL, Neon Postgres store, Redis Streams event bus, audit worker with independent invariant checking
-- [ ] Week 7: load generator, throughput/latency measurement, basic observability
+- [x] Week 7: metrics recorder + `/stats` endpoint, standalone load generator with measured throughput/latency
 - [ ] Week 8: docs, demo recording, final polish
