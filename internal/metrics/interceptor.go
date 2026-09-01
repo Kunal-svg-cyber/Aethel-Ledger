@@ -7,9 +7,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-// UnaryServerInterceptor times every unary RPC and records it, without
-// any individual handler in internal/server needing to know metrics
-// exist. Wire it in with grpc.NewServer(grpc.UnaryInterceptor(...)).
 func (r *Recorder) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
