@@ -71,6 +71,12 @@ func TestTransfer_RejectsSameAccount(t *testing.T) {
 	}
 }
 
+// TestConcurrentTransfers_ConservesTotalBalance is the core correctness
+// proof for the concurrency design: fire many goroutines doing random
+// transfers across a small pool of accounts (to force heavy lock
+// contention on the same shards and same accounts), then assert that the
+// sum of all balances is exactly conserved. Any data race or lost update
+// would show up here as a mismatched total. Run with -race.
 func TestConcurrentTransfers_ConservesTotalBalance(t *testing.T) {
 	const (
 		numAccounts     = 12
@@ -104,7 +110,9 @@ func TestConcurrentTransfers_ConservesTotalBalance(t *testing.T) {
 					continue
 				}
 				amount := int64(r.Intn(50) + 1)
-				
+				// Insufficient-funds errors are expected and fine here —
+				// what matters is that every successful transfer keeps
+				// the total conserved.
 				_ = e.Transfer(ctx, from, to, amount)
 			}
 		}(int64(g))
@@ -120,6 +128,12 @@ func TestConcurrentTransfers_ConservesTotalBalance(t *testing.T) {
 	}
 }
 
+// TestTransfer_NoDeadlockUnderReversedConcurrentPairs specifically
+// stresses the scenario that would deadlock a naive "lock from, then
+// lock to" implementation: many goroutines doing A->B concurrently with
+// many goroutines doing B->A. If Transfer locked in caller-supplied
+// order, this test would hang. We enforce a hard timeout so a deadlock
+// fails the test instead of hanging the suite forever.
 func TestTransfer_NoDeadlockUnderReversedConcurrentPairs(t *testing.T) {
 	e := NewEngine(nil)
 	ctx := context.Background()
@@ -161,6 +175,9 @@ func TestTransfer_NoDeadlockUnderReversedConcurrentPairs(t *testing.T) {
 	}
 }
 
+// BenchmarkTransfer_Parallel measures sustained transfer throughput under
+// concurrent load. Report these numbers (ns/op, and derive ops/sec) in
+// the README — this is the figure worth quoting in an interview.
 func BenchmarkTransfer_Parallel(b *testing.B) {
 	const numAccounts = 64
 	e := NewEngine(nil)
