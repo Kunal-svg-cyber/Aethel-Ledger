@@ -9,14 +9,25 @@ import (
 	status "google.golang.org/grpc/status"
 )
 
+// This is a compile-time assertion to ensure that this generated file
+// is compatible with the grpc package it is being compiled against.
 const _ = grpc.SupportPackageIsVersion7
 
+// LedgerServiceClient is the client API for LedgerService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type LedgerServiceClient interface {
 	// Deposit credits an account. Creates the account on first touch.
 	Deposit(ctx context.Context, in *DepositRequest, opts ...grpc.CallOption) (*DepositResponse, error)
-
+	// Transfer atomically moves funds between two accounts using the
+	// engine's deterministic lock-ordered Transfer(). Requires an
+	// idempotency_key so retried requests (e.g. from a flaky client or
+	// load balancer) are never applied twice — see week 3-4's
+	// idempotency layer, which sits in front of this call.
 	Transfer(ctx context.Context, in *TransferRequest, opts ...grpc.CallOption) (*TransferResponse, error)
-
+	// GetBalance reads the current balance of an account. Returns 0 for
+	// an account that has never been touched, not an error — an
+	// untouched account is a valid, well-defined state in this ledger.
 	GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*GetBalanceResponse, error)
 }
 
@@ -55,16 +66,26 @@ func (c *ledgerServiceClient) GetBalance(ctx context.Context, in *GetBalanceRequ
 	return out, nil
 }
 
+// LedgerServiceServer is the server API for LedgerService service.
+// All implementations must embed UnimplementedLedgerServiceServer
+// for forward compatibility
 type LedgerServiceServer interface {
 	// Deposit credits an account. Creates the account on first touch.
 	Deposit(context.Context, *DepositRequest) (*DepositResponse, error)
-
+	// Transfer atomically moves funds between two accounts using the
+	// engine's deterministic lock-ordered Transfer(). Requires an
+	// idempotency_key so retried requests (e.g. from a flaky client or
+	// load balancer) are never applied twice — see week 3-4's
+	// idempotency layer, which sits in front of this call.
 	Transfer(context.Context, *TransferRequest) (*TransferResponse, error)
-
+	// GetBalance reads the current balance of an account. Returns 0 for
+	// an account that has never been touched, not an error — an
+	// untouched account is a valid, well-defined state in this ledger.
 	GetBalance(context.Context, *GetBalanceRequest) (*GetBalanceResponse, error)
 	mustEmbedUnimplementedLedgerServiceServer()
 }
 
+// UnimplementedLedgerServiceServer must be embedded to have forward compatible implementations.
 type UnimplementedLedgerServiceServer struct {
 }
 
@@ -79,6 +100,9 @@ func (UnimplementedLedgerServiceServer) GetBalance(context.Context, *GetBalanceR
 }
 func (UnimplementedLedgerServiceServer) mustEmbedUnimplementedLedgerServiceServer() {}
 
+// UnsafeLedgerServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to LedgerServiceServer will
+// result in compilation errors.
 type UnsafeLedgerServiceServer interface {
 	mustEmbedUnimplementedLedgerServiceServer()
 }
