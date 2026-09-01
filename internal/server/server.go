@@ -1,4 +1,6 @@
-
+// Package server implements the gRPC LedgerService, translating
+// protobuf requests into calls against the week 1-2 concurrency engine
+// and enforcing idempotency on Transfer.
 package server
 
 import (
@@ -14,6 +16,10 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
+// LedgerServer implements ledgerv1.LedgerServiceServer. It holds no
+// mutable state of its own — all state lives in the Engine (balances)
+// and the idempotency Store (dedup records) — so LedgerServer itself is
+// trivially safe to share across concurrent gRPC calls.
 type LedgerServer struct {
 	ledgerv1.UnimplementedLedgerServiceServer
 	engine     *ledger.Engine
@@ -48,10 +54,19 @@ func (s *LedgerServer) Transfer(ctx context.Context, req *ledgerv1.TransferReque
 		return nil, status.Error(codes.InvalidArgument, "idempotency_key is required")
 	}
 
+	// Idempotency check happens BEFORE touching the engine. This is the
+	// layer that protects against a client (or a load balancer, or a
+	// flaky network) retrying the exact same transfer intent — without
+	// it, a retried request would call engine.Transfer twice and move
+	// funds twice for what the client considers a single action.
 	if cached, alreadyCommitted, err := s.idempotent.CheckAndReserve(req.GetIdempotencyKey()); err != nil {
 		return nil, status.Errorf(codes.Internal, "idempotency check failed: %v", err)
 	} else if alreadyCommitted {
 		if cached == nil {
+			// Reserved by a concurrent in-flight request with the same
+			// key, not yet committed. See InMemoryStore's documented
+			// simplification; the Redis+Lua version resolves this
+			// properly with a genuinely atomic reservation.
 			return nil, status.Error(codes.Aborted, "duplicate request already in flight for this idempotency_key")
 		}
 		var resp ledgerv1.TransferResponse
@@ -77,6 +92,12 @@ func (s *LedgerServer) Transfer(ctx context.Context, req *ledgerv1.TransferReque
 	if encoded, err := json.Marshal(resp); err == nil {
 		_ = s.idempotent.Commit(req.GetIdempotencyKey(), encoded)
 	}
+	// A Commit failure here is intentionally non-fatal to the caller:
+	// the transfer already succeeded against the engine. Losing the
+	// idempotency record just means a subsequent retry with the same
+	// key could re-execute rather than replay — a tradeoff documented
+	// for the in-memory store; the Redis version commits via the same
+	// atomic script that did the reservation, closing this gap.
 
 	return resp, nil
 }
