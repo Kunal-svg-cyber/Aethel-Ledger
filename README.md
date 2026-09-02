@@ -1,10 +1,25 @@
 # Aethel Ledger
 
+[![CI](https://github.com/Kunal-svg-cyber/aethel-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/Kunal-svg-cyber/aethel-ledger/actions/workflows/ci.yml)
+[![Go 1.22](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A distributed, event-sourced financial ledger engine built from scratch in Go — designed to demonstrate correct, high-throughput concurrency control for money movement, not just another CRUD wallet API.
+
+**Demo video:** _add your recorded walkthrough link here (see [DEMO_SCRIPT.md](DEMO_SCRIPT.md))_
+
+**Headline numbers**, measured end-to-end through the real gRPC network path (not just the in-process engine — see [Load testing](#load-testing-and-observability-week-7)):
+
+| | |
+|---|---|
+| Throughput | **46,070 req/sec** sustained, 50 concurrent clients |
+| p50 / p99 latency | **1.10ms / 2.99ms** |
+| Correctness under load | **691,051 / 691,051** transfers succeeded, zero failures, zero invariant drift |
+| Concurrency proof | Race-detector-clean; deadlock-freedom proven under adversarial concurrent load ([see below](#the-concurrency-design-the-part-that-matters)) |
 
 ## Status
 
-**Week 7 of 8 — load testing and observability.** On top of everything through week 5-6: a metrics recorder wired in as a gRPC interceptor (per-RPC success/failure counts and p50/p95/p99 latency, exposed as JSON at `/stats`), and a standalone load generator that hits a running server as a real client and reports measured throughput and latency under concurrent load. Week 8 is documentation and final polish.
+**Complete — weeks 1 through 8.** Concurrency engine, gRPC gateway with idempotency, async persistence layer (WAL + Postgres + Redis Streams + audit worker), load testing and observability, and this documentation pass. See [Roadmap](#roadmap) for what shipped each week, and the verification notes below for exactly what's been build-tested versus syntax-checked.
 
 **Verification note, by package:**
 - `internal/ledger` (week 1-2): fully built and tested — `go vet`, `go test -race`, benchmark, all clean.
@@ -63,15 +78,20 @@ BenchmarkTransfer_Parallel   11,026,401 iters   107.1 ns/op   0 B/op   0 allocs/
 
 ## Running it
 
-No local installs needed — this repo is built to run entirely inside GitHub Codespaces (free tier: 120 core-hours/month, ~60 active hours on a 2-core machine).
+No local installs strictly required for a first read — the whole system also runs with zero external services configured (see the persistence section below). To actually build and run it:
 
 ```bash
+go mod tidy
 go build ./...
-go test -race ./...
+go test ./...
 go run ./cmd/server
 ```
 
-## Tech stack (target, end of week 8)
+### Local development notes (Windows)
+
+If `go test -race` fails locally with `cc1.exe: sorry, unimplemented: 64-bit mode not compiled in`, that's a 32-bit-only MinGW gcc on your `PATH`, not a bug in this project — the race detector needs a real 64-bit C toolchain for its cgo instrumentation. `go build` and `go test` (without `-race`) are unaffected. The [CI workflow](.github/workflows/ci.yml) runs `-race` on every push using GitHub Actions' Linux runners, which have a proper toolchain — treat that as the authoritative race-detector result if your local machine can't run it.
+
+## Tech stack
 
 | Layer | Choice | Why |
 |---|---|---|
@@ -80,7 +100,8 @@ go run ./cmd/server
 | Cache / idempotency | Upstash Redis (free tier) | Atomic Lua scripts for exactly-once retry handling |
 | Event bus | Redis Streams (Upstash Redis) | Replaces the now-discontinued Upstash Kafka; same consumer-group semantics |
 | Durable storage | Neon Postgres (free tier) | Serverless, async-batched WAL sink |
-| Dev environment | GitHub Codespaces | Zero local installs, fully browser-based |
+| Dev environment | GitHub Codespaces or local Go | Zero local installs if using Codespaces; verified working with a local Windows Go install too |
+| CI/CD | GitHub Actions | Free; runs `go vet`, `go build`, and `go test -race` on every push — the race detector runs here even on a Windows dev machine that can't run it locally |
 
 ## gRPC API
 
@@ -159,4 +180,14 @@ Measured against 20 accounts under deliberately heavy lock contention (50 worker
 - [x] Week 3-4: protobuf schema, gRPC gateway, in-memory idempotency layer (Redis swap-in planned)
 - [x] Week 5-6: async batching WAL, Neon Postgres store, Redis Streams event bus, audit worker with independent invariant checking
 - [x] Week 7: metrics recorder + `/stats` endpoint, standalone load generator with measured throughput/latency
-- [ ] Week 8: docs, demo recording, final polish
+- [x] Week 8: CI pipeline (GitHub Actions), MIT license, demo script, README polish
+
+## What's next (beyond week 8)
+
+Honest list of what a production version would still need, kept here rather than glossed over:
+
+- Swap the in-memory idempotency store for the originally-planned Redis + Lua atomic implementation (interface is already in place — see `internal/idempotency/store.go`).
+- WAL retry-with-backoff and local spill-to-disk on a Postgres outage, instead of the current log-and-drop.
+- TLS for the gRPC endpoint (currently plaintext, fine for a local/portfolio demo, not for production).
+- Structured logging (e.g. `slog` with JSON output) instead of the current plain `log` calls.
+- A real deployment (Cloud Run is the natural fit — see conversation history for why Vercel doesn't work for a stateful gRPC server).
