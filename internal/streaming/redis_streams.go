@@ -1,4 +1,10 @@
-
+// Package streaming implements the event bus that replaces the
+// originally-planned Upstash Kafka (deprecated Sept 2024, discontinued
+// March 2025 — see the top-level README). Redis Streams gives the same
+// append-only-log-with-consumer-offsets semantics Kafka would have,
+// exposed here over Upstash Redis's REST API. Using the REST API instead
+// of a wire-protocol Redis client keeps this package dependency-free:
+// it only needs net/http and encoding/json from the standard library.
 package streaming
 
 import (
@@ -12,6 +18,11 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
+// RedisStreamsBus publishes ledger events to a single Redis Stream and
+// can read them back in order. Satisfies wal.Publisher (Publish method)
+// structurally — this package deliberately doesn't import wal, to avoid
+// a dependency cycle; Go's structural interface satisfaction wires them
+// together at the call site in main.go instead.
 type RedisStreamsBus struct {
 	baseURL    string // e.g. https://your-db.upstash.io
 	token      string
@@ -42,11 +53,16 @@ func (b *RedisStreamsBus) Publish(ctx context.Context, ev ledger.Event) error {
 	return err
 }
 
+// StreamEntry is one entry read back from the stream: an opaque,
+// lexically-ordered ID plus the field/value pairs written by Publish.
 type StreamEntry struct {
 	ID     string
 	Fields map[string]string
 }
 
+// ReadRange reads entries strictly after fromIDExclusive (pass "" to
+// read from the beginning of the stream) via XRANGE. Used by the audit
+// worker to poll for new events since its last-seen ID.
 func (b *RedisStreamsBus) ReadRange(ctx context.Context, fromIDExclusive string) ([]StreamEntry, error) {
 	start := "-"
 	if fromIDExclusive != "" {
@@ -94,6 +110,10 @@ type restResponse struct {
 	Error  string      `json:"error"`
 }
 
+// do sends one command to the Upstash REST API using its JSON-array
+// command form (POST body is e.g. ["XADD","stream","*","field","val"]),
+// which avoids URL-encoding pitfalls that the path-based form has for
+// values containing special characters.
 func (b *RedisStreamsBus) do(ctx context.Context, cmd []interface{}) (interface{}, error) {
 	body, err := json.Marshal(cmd)
 	if err != nil {
