@@ -60,6 +60,11 @@ func TestTransfer_InsufficientFundsMapsToFailedPrecondition(t *testing.T) {
 	}
 }
 
+// TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending is the core
+// correctness proof for the idempotency layer: the same idempotency_key
+// submitted twice must move funds exactly once. The second call must
+// come back marked Replayed=true with the original result, not execute
+// a second transfer.
 func TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending(t *testing.T) {
 	s := newTestServer()
 	ctx := context.Background()
