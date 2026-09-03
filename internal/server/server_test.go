@@ -60,11 +60,8 @@ func TestTransfer_InsufficientFundsMapsToFailedPrecondition(t *testing.T) {
 	}
 }
 
-// TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending is the core
-// correctness proof for the idempotency layer: the same idempotency_key
-// submitted twice must move funds exactly once. The second call must
-// come back marked Replayed=true with the original result, not execute
-// a second transfer.
+// TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending asserts the
+// same idempotency_key submitted twice moves funds exactly once.
 func TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending(t *testing.T) {
 	s := newTestServer()
 	ctx := context.Background()
@@ -93,7 +90,6 @@ func TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending(t *testing.T) {
 		t.Fatalf("replayed result mismatch: first=%+v second=%+v", first, second)
 	}
 
-	// The definitive check: funds moved exactly once, not twice.
 	balResp, err := s.GetBalance(ctx, &ledgerv1.GetBalanceRequest{AccountId: "alice"})
 	if err != nil {
 		t.Fatalf("GetBalance failed: %v", err)
