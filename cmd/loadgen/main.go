@@ -1,9 +1,8 @@
-// Command loadgen is a standalone gRPC load generator for Aethel Ledger.
-// It seeds a pool of accounts, then fires concurrent Transfer requests
-// against a running server for a fixed duration, measuring real
-// client-observed throughput and latency — the numbers worth quoting in
-// an interview, since they're measured against the actual network
-// round trip, not just the in-process engine benchmark from week 1-2.
+// Command loadgen is a standalone gRPC load generator for Aethel
+// Ledger. It seeds a pool of accounts, then fires concurrent Transfer
+// requests against a running server for a fixed duration, measuring
+// real network-measured throughput and latency, including gRPC
+// serialization and round-trip cost.
 //
 // Usage:
 //
@@ -94,8 +93,7 @@ func main() {
 }
 
 // seedAccounts deposits a large starting balance into numAccounts fresh
-// accounts so the load test has room to run many transfers without
-// hitting insufficient-funds errors that would understate throughput.
+// accounts so the load test doesn't hit insufficient-funds errors.
 func seedAccounts(ctx context.Context, client ledgerv1.LedgerServiceClient, numAccounts int) []string {
 	accounts := make([]string, numAccounts)
 	for i := range accounts {
@@ -133,9 +131,8 @@ func report(duration time.Duration, concurrency int, success, failure int64, lat
 	fmt.Printf("Latency p99:     %s\n", p99)
 	fmt.Printf("Latency max:     %s\n", max)
 	fmt.Println()
-	fmt.Println("Paste these numbers into README.md's benchmark section —")
-	fmt.Println("this is the real, network-measured throughput, distinct from")
-	fmt.Println("the in-process engine benchmark from week 1-2.")
+	fmt.Println("This is the real, network-measured throughput, distinct from")
+	fmt.Println("the in-process engine microbenchmark.")
 }
 
 func percentile(sorted []time.Duration, p float64) time.Duration {
