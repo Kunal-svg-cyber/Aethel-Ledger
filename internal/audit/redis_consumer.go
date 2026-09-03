@@ -11,18 +11,13 @@ import (
 )
 
 // StreamReader is the subset of streaming.RedisStreamsBus that
-// RedisConsumer needs. Defined as an interface here (rather than taking
-// a concrete *streaming.RedisStreamsBus) so tests can supply a fake
-// reader without spinning up an HTTP mock server.
+// RedisConsumer needs, letting tests supply a fake reader.
 type StreamReader interface {
 	ReadRange(ctx context.Context, fromIDExclusive string) ([]streaming.StreamEntry, error)
 }
 
 // RedisConsumer polls a Redis Stream on an interval, parses each new
-// entry back into a ledger.Event, and applies it to a Worker. This is
-// the "detached background consumer service" from the architecture
-// diagram — in production it runs as its own process, decoupled from
-// the gRPC gateway, reading only from the event bus.
+// entry back into a ledger.Event, and applies it to a Worker.
 type RedisConsumer struct {
 	reader StreamReader
 	worker *Worker
@@ -33,8 +28,7 @@ func NewRedisConsumer(reader StreamReader, worker *Worker) *RedisConsumer {
 	return &RedisConsumer{reader: reader, worker: worker}
 }
 
-// Run polls every interval until ctx is cancelled. Intended to run in
-// its own goroutine (or, in a real deployment, its own process).
+// Run polls every interval until ctx is cancelled.
 func (c *RedisConsumer) Run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
