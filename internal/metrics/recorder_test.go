@@ -36,8 +36,6 @@ func TestRecorder_SeparatesStatsByMethod(t *testing.T) {
 
 func TestRecorder_PercentilesAreMonotonic(t *testing.T) {
 	r := NewRecorder()
-	// 100 samples: 1ms, 2ms, ..., 100ms. p50 should be well below p95,
-	// which should be well below p99, which should be <= max.
 	for i := 1; i <= 100; i++ {
 		r.Record("/svc/Method", time.Duration(i)*time.Millisecond, false)
 	}
@@ -52,12 +50,11 @@ func TestRecorder_PercentilesAreMonotonic(t *testing.T) {
 		t.Fatalf("percentiles not monotonic: p50=%v p95=%v p99=%v max=%v",
 			s.P50Millis, s.P95Millis, s.P99Millis, s.MaxMillis)
 	}
-	// With 1..100ms uniformly, p50 should land near 50ms and max at 100ms.
 	if s.MaxMillis != 100 {
 		t.Fatalf("max = %v, want 100", s.MaxMillis)
 	}
 	if s.P50Millis < 40 || s.P50Millis > 60 {
-		t.Fatalf("p50 = %v, want roughly 50 (uniform 1..100ms distribution)", s.P50Millis)
+		t.Fatalf("p50 = %v, want roughly 50", s.P50Millis)
 	}
 }
 
