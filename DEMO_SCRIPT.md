@@ -73,6 +73,6 @@ numbers out loud.
 ## After recording
 
 Trim dead air at the start/end. Upload to YouTube as **Unlisted** (not
-Private — Unlisted links work when pasted into a resume/portfolio
-without appearing in your public channel or search). Add the link to
+Private — Unlisted links are viewable by anyone with the link but
+don't appear in your public channel or search). Add the link to
 the "Demo" section at the top of `README.md`.
