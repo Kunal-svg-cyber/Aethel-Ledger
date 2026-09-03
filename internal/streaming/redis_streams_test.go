@@ -68,8 +68,6 @@ func TestReadRange_ParsesXRANGEResponseAndUsesExclusiveLowerBound(t *testing.T) 
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&gotCmd)
-		// Mimics Upstash's JSON shape for an XRANGE result: an array of
-		// [id, [field1, val1, field2, val2, ...]] pairs.
 		resp := map[string]interface{}{
 			"result": []interface{}{
 				[]interface{}{"1000-0", []interface{}{"seq", "1", "type", "deposit", "account", "alice", "counter_account", "", "amount", "100"}},
