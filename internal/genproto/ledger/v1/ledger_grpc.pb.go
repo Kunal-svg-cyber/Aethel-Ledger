@@ -19,15 +19,11 @@ const _ = grpc.SupportPackageIsVersion7
 type LedgerServiceClient interface {
 	// Deposit credits an account. Creates the account on first touch.
 	Deposit(ctx context.Context, in *DepositRequest, opts ...grpc.CallOption) (*DepositResponse, error)
-	// Transfer atomically moves funds between two accounts using the
-	// engine's deterministic lock-ordered Transfer(). Requires an
-	// idempotency_key so retried requests (e.g. from a flaky client or
-	// load balancer) are never applied twice — see week 3-4's
-	// idempotency layer, which sits in front of this call.
+	// Transfer atomically moves funds between two accounts. Requires an
+	// idempotency_key so retried requests are never applied twice.
 	Transfer(ctx context.Context, in *TransferRequest, opts ...grpc.CallOption) (*TransferResponse, error)
 	// GetBalance reads the current balance of an account. Returns 0 for
-	// an account that has never been touched, not an error — an
-	// untouched account is a valid, well-defined state in this ledger.
+	// an untouched account, not an error.
 	GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*GetBalanceResponse, error)
 }
 
@@ -72,15 +68,11 @@ func (c *ledgerServiceClient) GetBalance(ctx context.Context, in *GetBalanceRequ
 type LedgerServiceServer interface {
 	// Deposit credits an account. Creates the account on first touch.
 	Deposit(context.Context, *DepositRequest) (*DepositResponse, error)
-	// Transfer atomically moves funds between two accounts using the
-	// engine's deterministic lock-ordered Transfer(). Requires an
-	// idempotency_key so retried requests (e.g. from a flaky client or
-	// load balancer) are never applied twice — see week 3-4's
-	// idempotency layer, which sits in front of this call.
+	// Transfer atomically moves funds between two accounts. Requires an
+	// idempotency_key so retried requests are never applied twice.
 	Transfer(context.Context, *TransferRequest) (*TransferResponse, error)
 	// GetBalance reads the current balance of an account. Returns 0 for
-	// an account that has never been touched, not an error — an
-	// untouched account is a valid, well-defined state in this ledger.
+	// an untouched account, not an error.
 	GetBalance(context.Context, *GetBalanceRequest) (*GetBalanceResponse, error)
 	mustEmbedUnimplementedLedgerServiceServer()
 }
