@@ -11,16 +11,14 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
-// PostgresStore durably persists WAL batches to a Postgres database
-// (Neon's serverless Postgres in production — see README). Uses
-// database/sql with lib/pq, a pure-Go driver requiring no CGO.
+// PostgresStore durably persists WAL batches to Postgres via
+// database/sql and lib/pq.
 type PostgresStore struct {
 	db *sql.DB
 }
 
-// NewPostgresStore opens a connection pool against dsn (a standard
-// postgres:// connection string — Neon gives you one directly from its
-// dashboard) and verifies connectivity with a Ping.
+// NewPostgresStore opens a connection pool against dsn and verifies
+// connectivity with a Ping.
 func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -42,8 +40,7 @@ CREATE TABLE IF NOT EXISTS ledger_events (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );`
 
-// EnsureSchema creates the ledger_events table if it doesn't already
-// exist. Call once at startup.
+// EnsureSchema creates the ledger_events table if it doesn't exist.
 func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, createTableSQL)
 	return err

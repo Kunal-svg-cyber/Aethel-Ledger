@@ -9,8 +9,7 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
-// countingPublisher records every event it's asked to publish, so tests
-// can assert the WAL actually calls Publish for each event it processes.
+// countingPublisher records every event it's asked to publish.
 type countingPublisher struct {
 	mu     sync.Mutex
 	events []ledger.Event
@@ -31,8 +30,6 @@ func (p *countingPublisher) count() int {
 
 func TestWAL_FlushesOnBatchSize(t *testing.T) {
 	store := NewInMemoryStore()
-	// Long flush interval so we can be sure a size-triggered flush, not
-	// a time-triggered one, is what puts events in the store.
 	w := New(store, nil, Config{BatchSize: 5, FlushInterval: time.Hour})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -58,8 +55,6 @@ func TestWAL_FlushesOnBatchSize(t *testing.T) {
 
 func TestWAL_FlushesOnInterval(t *testing.T) {
 	store := NewInMemoryStore()
-	// Batch size large enough that only the interval ticker can trigger
-	// the flush of these 2 events.
 	w := New(store, nil, Config{BatchSize: 1000, FlushInterval: 50 * time.Millisecond})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -107,10 +102,6 @@ func TestWAL_PublishesEveryEventIndependentlyOfBatching(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	// Publisher saw all events even though the batch never hit its size
-	// threshold and the interval hasn't fired — publish is independent
-	// of the Postgres flush cadence, which is the point: the audit
-	// worker gets low-latency events even while the WAL batches writes.
 	if len(store.All()) != 0 {
 		t.Fatalf("store should still be empty (no flush triggered yet), got %d", len(store.All()))
 	}
@@ -126,8 +117,6 @@ func TestWAL_FlushesRemainingBatchOnShutdown(t *testing.T) {
 	w.Events() <- ledger.Event{Seq: 1, Type: ledger.EventDeposit, Account: "alice", Amount: 10}
 	w.Events() <- ledger.Event{Seq: 2, Type: ledger.EventDeposit, Account: "bob", Amount: 20}
 
-	// Give the goroutine a moment to have received both sends before we
-	// cancel, then cancel and wait for the documented shutdown flush.
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 

@@ -7,10 +7,7 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
-// InMemoryStore is a process-local Store with no durability guarantees —
-// data is lost on restart. Used when no DATABASE_URL is configured, and
-// in tests that only care about batching/flush behavior, not real
-// persistence.
+// InMemoryStore is a process-local Store with no durability guarantees.
 type InMemoryStore struct {
 	mu     sync.Mutex
 	events []ledger.Event

@@ -8,16 +8,14 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
-// TestPostgresStore_FlushAndDedup is an integration test, not a unit
-// test — it needs a real reachable Postgres (e.g. your Neon connection
-// string). It's skipped by default so `go test ./...` works with zero
-// external services. Run it explicitly against your own database with:
+// TestPostgresStore_FlushAndDedup is an integration test requiring a
+// real Postgres connection; skipped unless DATABASE_URL is set. Run with:
 //
 //	DATABASE_URL="postgres://user:pass@host/db?sslmode=require" go test ./internal/wal/ -run TestPostgresStore -v
 func TestPostgresStore_FlushAndDedup(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping Postgres integration test (see comment above to run it)")
+		t.Skip("DATABASE_URL not set")
 	}
 
 	store, err := NewPostgresStore(dsn)
@@ -39,9 +37,6 @@ func TestPostgresStore_FlushAndDedup(t *testing.T) {
 	if err := store.FlushBatch(ctx, batch); err != nil {
 		t.Fatalf("first flush: %v", err)
 	}
-	// Flushing the exact same batch again must not error and must not
-	// duplicate rows, thanks to ON CONFLICT (seq) DO NOTHING — this is
-	// what makes a WAL retry after a transient failure safe.
 	if err := store.FlushBatch(ctx, batch); err != nil {
 		t.Fatalf("duplicate flush should not error: %v", err)
 	}
@@ -52,9 +47,8 @@ func TestPostgresStore_FlushAndDedup(t *testing.T) {
 		t.Fatalf("count query: %v", err)
 	}
 	if count != 2 {
-		t.Fatalf("row count = %d, want 2 (dedup on retry should prevent duplicates)", count)
+		t.Fatalf("row count = %d, want 2", count)
 	}
 
-	// cleanup
 	_, _ = store.db.ExecContext(ctx, "DELETE FROM ledger_events WHERE seq IN ($1, $2)", 999001, 999002)
 }
