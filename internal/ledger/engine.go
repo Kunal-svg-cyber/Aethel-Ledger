@@ -166,6 +166,51 @@ func (e *Engine) Balance(id string) int64 {
 	return a.balance
 }
 
+// Restore rebuilds engine state by replaying a previously-persisted
+// event log, in seq order — used at startup to recover balances after a
+// restart. Unlike Deposit/Transfer, it does not re-validate business
+// rules (each event already succeeded once when originally applied) and
+// does not re-emit events to the WAL sink. After replay, the internal
+// sequence counter is advanced to the highest seq seen, so subsequent
+// new events continue the sequence rather than restarting at 0 and
+// colliding with already-persisted rows.
+func (e *Engine) Restore(events []Event) {
+	var maxSeq int64
+	for _, ev := range events {
+		switch ev.Type {
+		case EventDeposit:
+			a := e.getOrCreate(ev.Account)
+			a.mu.Lock()
+			a.balance += ev.Amount
+			a.mu.Unlock()
+
+		case EventTransfer:
+			from := e.getOrCreate(ev.Account)
+			to := e.getOrCreate(ev.CounterAccount)
+
+			first, second := from, to
+			if second.id < first.id {
+				first, second = second, first
+			}
+			first.mu.Lock()
+			second.mu.Lock()
+			from.balance -= ev.Amount
+			to.balance += ev.Amount
+			second.mu.Unlock()
+			first.mu.Unlock()
+		}
+		if ev.Seq > maxSeq {
+			maxSeq = ev.Seq
+		}
+	}
+	atomic.StoreInt64(&e.seq, maxSeq)
+}
+
+// CurrentSeq returns the engine's current sequence counter value.
+func (e *Engine) CurrentSeq() int64 {
+	return atomic.LoadInt64(&e.seq)
+}
+
 func (e *Engine) nextSeq() int64 {
 	return atomic.AddInt64(&e.seq, 1)
 }

@@ -9,6 +9,59 @@ import (
 	"time"
 )
 
+func TestRestore_RebuildsBalancesFromEventLog(t *testing.T) {
+	e := NewEngine(nil)
+	history := []Event{
+		{Seq: 1, Type: EventDeposit, Account: "alice", Amount: 1000},
+		{Seq: 2, Type: EventDeposit, Account: "bob", Amount: 500},
+		{Seq: 3, Type: EventTransfer, Account: "alice", CounterAccount: "bob", Amount: 300},
+		{Seq: 4, Type: EventTransfer, Account: "bob", CounterAccount: "alice", Amount: 100},
+	}
+	e.Restore(history)
+
+	if got := e.Balance("alice"); got != 800 {
+		t.Fatalf("alice balance after restore = %d, want 800", got)
+	}
+	if got := e.Balance("bob"); got != 700 {
+		t.Fatalf("bob balance after restore = %d, want 700", got)
+	}
+}
+
+func TestRestore_ContinuesSequenceWithoutCollision(t *testing.T) {
+	e := NewEngine(nil)
+	history := []Event{
+		{Seq: 1, Type: EventDeposit, Account: "alice", Amount: 1000},
+		{Seq: 5, Type: EventDeposit, Account: "bob", Amount: 500}, // gap: simulates a prior process that got further
+	}
+	e.Restore(history)
+
+	if got := e.CurrentSeq(); got != 5 {
+		t.Fatalf("CurrentSeq after restore = %d, want 5", got)
+	}
+
+	// The next event emitted by the restored engine must continue past
+	// the highest seq already persisted, not restart at 1 (which would
+	// collide with an already-committed row under ON CONFLICT DO NOTHING
+	// and silently drop the new event).
+	if _, err := e.Deposit(context.Background(), "carol", 200); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := e.CurrentSeq(); got != 6 {
+		t.Fatalf("CurrentSeq after post-restore deposit = %d, want 6", got)
+	}
+}
+
+func TestRestore_OnEmptyHistoryLeavesEngineAtZero(t *testing.T) {
+	e := NewEngine(nil)
+	e.Restore(nil)
+	if got := e.CurrentSeq(); got != 0 {
+		t.Fatalf("CurrentSeq after empty restore = %d, want 0", got)
+	}
+	if got := e.Balance("alice"); got != 0 {
+		t.Fatalf("balance after empty restore = %d, want 0", got)
+	}
+}
+
 func TestDeposit(t *testing.T) {
 	e := NewEngine(nil)
 	bal, err := e.Deposit(context.Background(), "alice", 500)
