@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
@@ -37,15 +39,32 @@ func main() {
 
 	auditWorker := audit.NewWorker()
 
-	store := buildStore(ctx)
+	dsn := os.Getenv("DATABASE_URL")
+	store := buildStore(ctx, dsn)
 	publisher := buildPublisher(ctx, auditWorker)
+
+	// Recover state from durable storage before serving any traffic.
+	// Without this, every restart would silently reset all balances to
+	// zero despite the full event history sitting in Postgres.
+	history, err := store.LoadAll(ctx)
+	if err != nil {
+		log.Fatalf("failed to load event history: %v", err)
+	}
 
 	w := wal.New(store, publisher, wal.DefaultConfig())
 	go w.Run(ctx)
 
 	engine := ledger.NewEngine(w.Events())
-	idemStore := idempotency.NewInMemoryStore()
-	ledgerServer := server.New(engine, idemStore)
+	engine.Restore(history)
+	for _, ev := range history {
+		auditWorker.Apply(ev)
+	}
+	if len(history) > 0 {
+		log.Printf("recovered %d events from durable storage; sequence resumes at %d", len(history), engine.CurrentSeq())
+	}
+
+	idemStore := buildIdempotencyStore(ctx, dsn)
+	ledgerServer := server.New(engine, idemStore, w)
 
 	go logInvariantPeriodically(ctx, auditWorker)
 
@@ -61,16 +80,34 @@ func main() {
 		log.Fatalf("failed to listen on %s: %v", listenAddr, err)
 	}
 
+	// On SIGINT/SIGTERM, stop accepting new RPCs and let in-flight ones
+	// finish, then cancel the WAL/audit context so WAL.Run performs its
+	// final flush before the process exits. Without this, a normal
+	// Ctrl+C or container SIGTERM kills the process immediately and any
+	// buffered-but-unflushed events are lost, since Go does not run
+	// deferred functions on an unhandled signal.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("shutdown signal received: draining in-flight requests")
+		grpcServer.GracefulStop()
+	}()
+
 	log.Printf("Aethel Ledger gRPC server listening on %s", listenAddr)
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("grpc server error: %v", err)
 	}
+
+	log.Println("gRPC server stopped; flushing remaining WAL events")
+	cancel()
+	<-w.Done()
+	log.Println("shutdown complete")
 }
 
-// buildStore picks Postgres if DATABASE_URL is set, otherwise an
+// buildStore picks Postgres if dsn is non-empty, otherwise an
 // in-memory store.
-func buildStore(ctx context.Context) wal.Store {
-	dsn := os.Getenv("DATABASE_URL")
+func buildStore(ctx context.Context, dsn string) wal.Store {
 	if dsn == "" {
 		log.Println("DATABASE_URL not set — using in-memory store (not durable across restarts)")
 		return wal.NewInMemoryStore()
@@ -84,6 +121,29 @@ func buildStore(ctx context.Context) wal.Store {
 		log.Fatalf("failed to create ledger_events schema: %v", err)
 	}
 	log.Println("WAL persisting to Postgres")
+	return pgStore
+}
+
+// buildIdempotencyStore picks Postgres if dsn is non-empty, otherwise an
+// in-memory store. An in-memory idempotency store forgets every key it
+// has ever seen on restart, which can let a resubmitted request with a
+// previously-committed idempotency key execute a second time — the
+// Postgres-backed store closes that gap by persisting records
+// alongside the ledger's own event log.
+func buildIdempotencyStore(ctx context.Context, dsn string) idempotency.Store {
+	if dsn == "" {
+		log.Println("DATABASE_URL not set — idempotency keys are in-memory only (do not survive a restart)")
+		return idempotency.NewInMemoryStore()
+	}
+
+	pgStore, err := idempotency.NewPostgresStore(dsn)
+	if err != nil {
+		log.Fatalf("failed to connect idempotency store to Postgres: %v", err)
+	}
+	if err := pgStore.EnsureSchema(ctx); err != nil {
+		log.Fatalf("failed to create idempotency_keys schema: %v", err)
+	}
+	log.Println("Idempotency keys persisting to Postgres")
 	return pgStore
 }
 
