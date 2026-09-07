@@ -50,5 +50,22 @@ func TestPostgresStore_FlushAndDedup(t *testing.T) {
 		t.Fatalf("row count = %d, want 2", count)
 	}
 
+	loaded, err := store.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	var found1, found2 bool
+	for _, ev := range loaded {
+		if ev.Seq == 999001 && ev.Account == "test-alice" && ev.Amount == 100 {
+			found1 = true
+		}
+		if ev.Seq == 999002 && ev.CounterAccount == "test-bob" && ev.Amount == 30 {
+			found2 = true
+		}
+	}
+	if !found1 || !found2 {
+		t.Fatalf("LoadAll did not return both seeded events: %+v", loaded)
+	}
+
 	_, _ = store.db.ExecContext(ctx, "DELETE FROM ledger_events WHERE seq IN ($1, $2)", 999001, 999002)
 }

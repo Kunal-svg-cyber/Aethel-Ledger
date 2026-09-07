@@ -46,19 +46,18 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	return err
 }
 
-// FlushBatch inserts an entire batch in a single transaction with a
-// multi-row INSERT, ON CONFLICT DO NOTHING on the primary key (seq) so a
-// retried flush after a partial failure can't create duplicate rows.
+// FlushBatch inserts an entire batch as a single multi-row INSERT, with
+// ON CONFLICT (seq) DO NOTHING on the primary key so a retried flush
+// after a partial failure can't create duplicate rows. Executed as a
+// single statement without an explicit transaction: a lone SQL
+// statement is already atomic in Postgres, so wrapping it in
+// BeginTx/Commit would only add two extra network round trips for no
+// additional safety -- a real cost against a remote database, not a
+// free correctness improvement.
 func (s *PostgresStore) FlushBatch(ctx context.Context, batch []ledger.Event) error {
 	if len(batch) == 0 {
 		return nil
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("wal: begin tx: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op if Commit succeeded
 
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO ledger_events (seq, type, account, counter_account, amount) VALUES ")
@@ -73,12 +72,38 @@ func (s *PostgresStore) FlushBatch(ctx context.Context, batch []ledger.Event) er
 	}
 	sb.WriteString(" ON CONFLICT (seq) DO NOTHING")
 
-	if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+	if _, err := s.db.ExecContext(ctx, sb.String(), args...); err != nil {
 		return fmt.Errorf("wal: batch insert: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *PostgresStore) Close() error {
 	return s.db.Close()
+}
+
+// LoadAll returns every persisted event in seq order, for rebuilding
+// engine state at startup.
+func (s *PostgresStore) LoadAll(ctx context.Context) ([]ledger.Event, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT seq, type, account, counter_account, amount FROM ledger_events ORDER BY seq ASC")
+	if err != nil {
+		return nil, fmt.Errorf("wal: load events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []ledger.Event
+	for rows.Next() {
+		var ev ledger.Event
+		var evType string
+		if err := rows.Scan(&ev.Seq, &evType, &ev.Account, &ev.CounterAccount, &ev.Amount); err != nil {
+			return nil, fmt.Errorf("wal: scan event row: %w", err)
+		}
+		ev.Type = ledger.EventType(evType)
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("wal: iterate event rows: %w", err)
+	}
+	return events, nil
 }

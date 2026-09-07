@@ -32,3 +32,8 @@ func (s *InMemoryStore) All() []ledger.Event {
 	copy(out, s.events)
 	return out
 }
+
+// LoadAll satisfies the Store interface by returning the same data as All.
+func (s *InMemoryStore) LoadAll(_ context.Context) ([]ledger.Event, error) {
+	return s.All(), nil
+}
