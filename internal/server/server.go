@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -16,15 +17,43 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
+// Flusher is satisfied by *wal.WAL. Defined here (rather than importing
+// wal directly) to keep this package's dependency graph one-directional
+// and to let tests supply a fake without an in-process WAL goroutine.
+type Flusher interface {
+	FlushNow(ctx context.Context) error
+}
+
 // LedgerServer implements ledgerv1.LedgerServiceServer.
 type LedgerServer struct {
 	ledgerv1.UnimplementedLedgerServiceServer
 	engine     *ledger.Engine
 	idempotent idempotency.Store
+	flusher    Flusher // nil is valid: skips the durable-ack wait
 }
 
-func New(engine *ledger.Engine, idempotent idempotency.Store) *LedgerServer {
-	return &LedgerServer{engine: engine, idempotent: idempotent}
+// New constructs a LedgerServer. Pass nil for flusher to skip the
+// durable-ack wait (events are still eventually persisted by the WAL's
+// normal batching cadence; the RPC just won't wait for it).
+func New(engine *ledger.Engine, idempotent idempotency.Store, flusher Flusher) *LedgerServer {
+	return &LedgerServer{engine: engine, idempotent: idempotent, flusher: flusher}
+}
+
+// awaitDurable blocks until the WAL has flushed everything buffered so
+// far, giving the caller a durable-ack guarantee before it responds to
+// the client. A flush failure is logged but does not fail the RPC: the
+// in-memory engine (the source of truth for live balance) already
+// reflects the mutation, and failing the RPC here would risk the client
+// retrying a Deposit — which has no idempotency protection — into a
+// double-deposit. This mirrors the WAL's existing log-and-continue
+// philosophy for transient persistence failures.
+func (s *LedgerServer) awaitDurable(ctx context.Context) {
+	if s.flusher == nil {
+		return
+	}
+	if err := s.flusher.FlushNow(ctx); err != nil {
+		log.Printf("server: durable-ack flush failed: %v", err)
+	}
 }
 
 func (s *LedgerServer) Deposit(ctx context.Context, req *ledgerv1.DepositRequest) (*ledgerv1.DepositResponse, error) {
@@ -36,6 +65,8 @@ func (s *LedgerServer) Deposit(ctx context.Context, req *ledgerv1.DepositRequest
 	if err != nil {
 		return nil, toGRPCError(err)
 	}
+
+	s.awaitDurable(ctx)
 
 	return &ledgerv1.DepositResponse{
 		AccountId: req.GetAccountId(),
@@ -51,7 +82,7 @@ func (s *LedgerServer) Transfer(ctx context.Context, req *ledgerv1.TransferReque
 		return nil, status.Error(codes.InvalidArgument, "idempotency_key is required")
 	}
 
-	if cached, alreadyCommitted, err := s.idempotent.CheckAndReserve(req.GetIdempotencyKey()); err != nil {
+	if cached, alreadyCommitted, err := s.idempotent.CheckAndReserve(ctx, req.GetIdempotencyKey()); err != nil {
 		return nil, status.Errorf(codes.Internal, "idempotency check failed: %v", err)
 	} else if alreadyCommitted {
 		if cached == nil {
@@ -69,6 +100,8 @@ func (s *LedgerServer) Transfer(ctx context.Context, req *ledgerv1.TransferReque
 		return nil, toGRPCError(err)
 	}
 
+	s.awaitDurable(ctx)
+
 	resp := &ledgerv1.TransferResponse{
 		FromAccountId: req.GetFromAccountId(),
 		ToAccountId:   req.GetToAccountId(),
@@ -78,7 +111,7 @@ func (s *LedgerServer) Transfer(ctx context.Context, req *ledgerv1.TransferReque
 	}
 
 	if encoded, err := json.Marshal(resp); err == nil {
-		_ = s.idempotent.Commit(req.GetIdempotencyKey(), encoded)
+		_ = s.idempotent.Commit(ctx, req.GetIdempotencyKey(), encoded)
 	}
 
 	return resp, nil
