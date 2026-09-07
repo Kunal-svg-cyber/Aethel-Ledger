@@ -8,7 +8,7 @@ A distributed, event-sourced financial ledger engine written in Go, built to dem
 
 **Demo video:** _link here (see [DEMO_SCRIPT.md](DEMO_SCRIPT.md))_
 
-**Measured end-to-end through the live gRPC network path** (see [Load testing](#load-testing-and-observability)):
+**Measured end-to-end through the live gRPC network path** (pre-durable-ack figures — see [Load testing](#load-testing-and-observability) for current numbers and why they changed):
 
 | | |
 |---|---|
@@ -98,7 +98,7 @@ Defined in [`proto/ledger/v1/ledger.proto`](proto/ledger/v1/ledger.proto), imple
 - `Transfer(from_account_id, to_account_id, amount, idempotency_key)` — moves funds via the engine's deadlock-free `Transfer`. Requires a client-generated `idempotency_key`; a retried request with the same key returns the original result (`replayed = true`) instead of moving funds again.
 - `GetBalance(account_id)` — reads current balance (0 for an untouched account, not an error).
 
-The idempotency layer ([`internal/idempotency/store.go`](internal/idempotency/store.go)) sits behind a `Store` interface with an in-memory implementation as the default; it's designed to swap directly for a Redis-backed implementation without any change to the server code.
+The idempotency layer ([`internal/idempotency/`](internal/idempotency/)) sits behind a `Store` interface with two implementations: an in-memory default, and a Postgres-backed one that persists records alongside the ledger's own event log — see below.
 
 `internal/server/server_test.go` includes `TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending`, which submits the same idempotency key twice and asserts funds moved exactly once.
 
@@ -110,11 +110,11 @@ grpcurl -plaintext -d '{"account_id":"alice","amount":1000}' localhost:50051 led
 
 ## Persistence layer
 
-- **WAL** ([`internal/wal/wal.go`](internal/wal/wal.go)) — drains the engine's event channel, batches events, and flushes on either a batch-size or time threshold, whichever comes first, so the hot transfer path never blocks on I/O.
+- **WAL** ([`internal/wal/wal.go`](internal/wal/wal.go)) — drains the engine's event channel, batches events, and flushes on either a batch-size or time threshold, whichever comes first. A synchronous `FlushNow` is also available for callers that need a durable-ack guarantee (see below).
 - **PostgresStore** ([`internal/wal/postgres_store.go`](internal/wal/postgres_store.go)) — durable sink for Postgres. Multi-row batched inserts with `ON CONFLICT (seq) DO NOTHING`, so a retried flush after a transient failure can't create duplicate rows.
 - **Redis Streams event bus** ([`internal/streaming/redis_streams.go`](internal/streaming/redis_streams.go)) — publishes and reads back events via the Upstash Redis REST API using only `net/http`, no third-party Redis client dependency.
-- **Audit worker** ([`internal/audit/worker.go`](internal/audit/worker.go)) — real-time mathematical auditing. It never reads the engine's live balances; it independently replays the append-only event log into its own derived account map, then verifies that the sum of all derived balances equals total deposits ever made — the formal statement of "transfers only move value, never create or destroy it."
-- **Zero-config local mode:** with no `DATABASE_URL` or Redis credentials set, the server still runs the complete pipeline — the WAL flushes to an in-memory store, and the audit worker is wired directly in-process via `audit.LocalPublisher` instead of through Redis. Set the environment variables below to switch to the durable path.
+- **Audit worker** ([`internal/audit/worker.go`](internal/audit/worker.go)) — real-time mathematical auditing. It never reads the engine's live balances; it independently replays the append-only event log into its own derived account map, then verifies that the sum of all derived balances equals total deposits ever made.
+- **Zero-config local mode:** with no `DATABASE_URL` or Redis credentials set, the server still runs the complete pipeline — the WAL flushes to an in-memory store, and the audit worker is wired directly in-process via `audit.LocalPublisher` instead of through Redis.
 
 ```bash
 export DATABASE_URL="postgres://user:pass@host/dbname?sslmode=require"
@@ -122,6 +122,34 @@ export UPSTASH_REDIS_REST_URL="https://your-db.upstash.io"
 export UPSTASH_REDIS_REST_TOKEN="your-upstash-token"
 go run ./cmd/server
 ```
+
+### Startup recovery
+
+On startup, `main.go` calls `store.LoadAll(ctx)` and replays the full persisted event history into both the engine (`Engine.Restore`) and the audit worker before accepting any traffic. This closes two related gaps: without it, every restart would silently reset all balances to zero despite the event history sitting durably in Postgres, and the engine's sequence counter would restart at 0 — colliding with already-persisted rows under `ON CONFLICT (seq) DO NOTHING` and causing every post-restart event to be silently dropped. `Restore` replays events directly into engine state without re-validating business rules or re-emitting them to the WAL, then advances the sequence counter to the highest `seq` seen so new events continue the sequence correctly. Covered by `TestRestore_RebuildsBalancesFromEventLog` and `TestRestore_ContinuesSequenceWithoutCollision` in `internal/ledger/engine_test.go`.
+
+### Graceful shutdown
+
+`main.go` catches `SIGINT`/`SIGTERM`, calls `grpcServer.GracefulStop()` to stop accepting new RPCs and let in-flight ones finish, then cancels the WAL's context and waits on `w.Done()` before the process exits. Without this, a normal `Ctrl+C` or container `SIGTERM` kills the process immediately — Go does not run deferred functions on an unhandled signal — so any events buffered but not yet flushed would be lost on every single shutdown, regardless of the WAL's own flush-on-cancellation logic.
+
+### Durable-ack tradeoff
+
+By default, `Deposit` and `Transfer` call `WAL.FlushNow` before returning success to the client, blocking until the WAL has actually flushed everything currently buffered — closing the window where a client could be told "success" for a transaction that hadn't yet reached durable storage. `FlushNow` uses a group-commit pattern: many concurrent callers within the same brief window register on a shared upcoming flush and are all satisfied by one round trip to the store, rather than one round trip per caller. This matters more than it might sound — an earlier, naive version triggered one flush per caller with no coalescing, which under 50-way concurrent load against a real remote Postgres instance produced a queueing pileup (18-24 second p50 latency, 5 req/sec throughput) instead of the expected small, bounded cost. `LedgerServer` accepts a `nil` flusher to opt back into fire-and-forget async acking entirely if raw throughput matters more than the guarantee for a given deployment. Covered by `TestWAL_FlushNowCoalescesConcurrentCallsIntoOneFlush` (asserts 20 concurrent callers against a 100ms-latency store complete in well under 1 second, not 2+), `TestWAL_FlushNowIncludesCallersOwnEvent` (the specific caller's own event is confirmed durable, not just whatever happened to already be batched), and the three durable-ack tests in `internal/server/server_test.go`.
+
+Re-run `cmd/loadgen` after pulling this change and update the numbers below — they'll reflect the durable-ack cost against your own database, and should be a modest reduction from the pre-durable-ack figures, not the multi-second pileup that a naive implementation would produce.
+
+**Measured against a real remote database (Supabase, pooled connection), iterating on this exact tradeoff in order:**
+
+| Version | Throughput | p50 latency |
+|---|---|---|
+| Naive (one round trip per caller, no coalescing) | 5 req/sec | 18.5s |
+| Group-commit `FlushNow` | 30 req/sec | 1.74s |
+| + dropped unnecessary transaction wrapper on a single-statement insert | 60.1 req/sec | 819ms |
+
+The third row is a small but real additional fix: `PostgresStore.FlushBatch` originally wrapped its insert in an explicit `BeginTx`/`Commit` (3 network round trips), but it only ever executes one SQL statement — which is already atomic in Postgres on its own. Removing the transaction wrapper cut round trips from 3 to 1 and roughly tripled throughput on the same database connection.
+
+### Idempotency durability
+
+The idempotency `Store` interface has two implementations: `InMemoryStore` (default) and `PostgresStore`. The in-memory version has a real gap worth naming directly: it forgets every key it has ever seen the moment the process restarts. If a client retries a `Transfer` with the same `idempotency_key` after the server has restarted, the in-memory store sees a key it doesn't recognize and executes the transfer again — a genuine double-spend, and one that surfaced during testing this project against a live database (a resubmitted transfer after a restart moved funds a second time, confirmed by the response carrying no `replayed` field). `PostgresStore` closes this by persisting each key's reservation and committed result in the same database as the ledger's event log, using `INSERT ... ON CONFLICT DO NOTHING RETURNING` to atomically detect whether a key is new in a single round trip. `main.go` uses it automatically whenever `DATABASE_URL` is set. Covered by `TestPostgresStore_SurvivesAcrossInstances` (an integration test that commits a key with one store instance and confirms a second, independent instance pointed at the same database recognizes it — the direct simulation of a restart), plus unit tests for the in-memory store's reserve/commit/replay behavior in `internal/idempotency/store_test.go`.
 
 ## Load testing and observability
 
@@ -140,8 +168,10 @@ go run ./cmd/loadgen -concurrency 50 -duration 15s
 curl http://localhost:8080/stats
 ```
 
+**Note on these figures:** the numbers below were measured before the durable-ack `FlushNow` change described above, so they reflect fire-and-forget async persistence, not the current default behavior. They're kept here as the historical in-memory-store baseline; re-run the command yourself against your own database to get the current, accurate figures, and replace this block with what you actually measure.
+
 ```
-=== Aethel Ledger Load Test Results ===
+=== Aethel Ledger Load Test Results (pre-durable-ack, in-memory store) ===
 Duration:        15s
 Concurrency:     50 workers
 Total requests:  691,051
@@ -154,17 +184,21 @@ Latency p99:     2.9854ms
 Latency max:     31.5557ms
 ```
 
-Measured against a 20-account pool under deliberately heavy lock contention (50 workers, 20 accounts — every transfer is likely to collide with another in flight). Zero failures across 691K requests, independently confirmed by both the load generator's client-side count and the server's own `/stats` interceptor.
+Measured against a 20-account pool under deliberately heavy lock contention (50 workers, 20 accounts — every transfer is likely to collide with another in flight), with `DATABASE_URL` unset (in-memory WAL store, no network round trip). Zero failures across 691K requests, independently confirmed by both the load generator's client-side count and the server's own `/stats` interceptor. With durable-ack enabled against a real remote Postgres instance, expect meaningfully lower throughput and higher latency — that's the correctness/performance tradeoff made explicit, not a regression.
 
-## Roadmap
+## Known limitations
 
-Planned hardening beyond the current implementation:
+Honest list of what remains, kept here rather than glossed over:
 
-- Swap the in-memory idempotency store for the Redis + Lua atomic implementation (interface already in place — see `internal/idempotency/store.go`).
-- WAL retry-with-backoff and local spill-to-disk on a Postgres outage, replacing the current log-and-drop behavior.
-- TLS for the gRPC endpoint (currently plaintext, suitable for local development, not production).
-- Structured logging (`slog` with JSON output) in place of the current plain `log` calls.
-- Container deployment via Cloud Run or an equivalent platform supporting long-lived gRPC servers (a serverless request/response platform like Vercel is not a fit for a stateful, connection-holding server).
+- Idempotency keys never expire, so both the in-memory and Postgres-backed stores grow unbounded for the life of the data; a production version would need a TTL/cleanup policy. The server also doesn't currently validate that a replayed key's request body matches the original — a client that reuses a key for a genuinely different transfer gets back the first result silently rather than an error.
+- No authentication, authorization, or TLS on the gRPC endpoint, and the `/stats` endpoint is unauthenticated — acceptable for local development, not for production.
+- No rate limiting.
+- `int64` balances have no overflow guard.
+- Single-node: no partitioning or horizontal scaling of the engine itself.
+- The audit worker logs on invariant drift but doesn't page, alert, or halt traffic.
+- WAL flush failures are logged and the batch is dropped, with no retry-with-backoff or local spill-to-disk yet.
+- Structured logging (`slog` with JSON output) would replace the current plain `log` calls for production use.
+- No containerized deployment yet — Cloud Run or an equivalent platform supporting long-lived gRPC servers is the natural fit (a serverless request/response platform like Vercel is not, since this is a stateful, connection-holding server).
 
 ## License
 
