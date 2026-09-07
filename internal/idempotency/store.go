@@ -1,11 +1,12 @@
 // Package idempotency guards the ledger against duplicate mutations
 // caused by client retries. The Store interface is backend-agnostic;
-// this file provides an in-memory implementation used by default, with
-// the production path swapping in a Redis-backed implementation behind
-// the same interface.
+// this file provides both an in-memory implementation (default, and
+// used in tests) and a Postgres-backed one that survives process
+// restarts and can coordinate across multiple server instances.
 package idempotency
 
 import (
+	"context"
 	"sync"
 )
 
@@ -14,14 +15,15 @@ import (
 type Store interface {
 	// CheckAndReserve returns (nil, false, nil) for a new key, reserving
 	// it, or (result, true, nil) if key was already committed.
-	CheckAndReserve(key string) (result []byte, alreadyCommitted bool, err error)
+	CheckAndReserve(ctx context.Context, key string) (result []byte, alreadyCommitted bool, err error)
 
 	// Commit stores the result for a previously reserved key.
-	Commit(key string, result []byte) error
+	Commit(ctx context.Context, key string, result []byte) error
 }
 
 // InMemoryStore is a thread-safe, process-local Store with no
-// cross-instance coordination.
+// cross-instance coordination and no durability across a restart — see
+// PostgresStore for the durable alternative.
 type InMemoryStore struct {
 	mu    sync.Mutex
 	state map[string]*entry
@@ -36,7 +38,7 @@ func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{state: make(map[string]*entry)}
 }
 
-func (s *InMemoryStore) CheckAndReserve(key string) ([]byte, bool, error) {
+func (s *InMemoryStore) CheckAndReserve(_ context.Context, key string) ([]byte, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -51,7 +53,7 @@ func (s *InMemoryStore) CheckAndReserve(key string) ([]byte, bool, error) {
 	return nil, true, nil
 }
 
-func (s *InMemoryStore) Commit(key string, result []byte) error {
+func (s *InMemoryStore) Commit(_ context.Context, key string, result []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state[key] = &entry{committed: true, result: result}
