@@ -2,11 +2,12 @@
 // concurrency engine, async WAL, idempotency layer, event bus, and
 // audit worker. Degrades gracefully with zero configuration: without
 // DATABASE_URL or Upstash Redis credentials, it runs entirely
-// in-process with an in-memory store.
+// in-process with in-memory stores.
 package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net"
 	"net/http"
@@ -40,7 +41,7 @@ func main() {
 	auditWorker := audit.NewWorker()
 
 	dsn := os.Getenv("DATABASE_URL")
-	store := buildStore(ctx, dsn)
+	store, idemStore := buildStores(ctx, dsn)
 	publisher := buildPublisher(ctx, auditWorker)
 
 	// Recover state from durable storage before serving any traffic.
@@ -63,7 +64,6 @@ func main() {
 		log.Printf("recovered %d events from durable storage; sequence resumes at %d", len(history), engine.CurrentSeq())
 	}
 
-	idemStore := buildIdempotencyStore(ctx, dsn)
 	ledgerServer := server.New(engine, idemStore, w)
 
 	go logInvariantPeriodically(ctx, auditWorker)
@@ -105,46 +105,46 @@ func main() {
 	log.Println("shutdown complete")
 }
 
-// buildStore picks Postgres if dsn is non-empty, otherwise an
-// in-memory store.
-func buildStore(ctx context.Context, dsn string) wal.Store {
+// buildStores constructs the WAL and idempotency stores. When dsn is
+// set, both share ONE underlying *sql.DB connection pool rather than
+// each opening its own — two independent, unbounded pools against the
+// same database can together exceed the provider's connection limit
+// under concurrent load even if either alone would be fine, which is
+// exactly what happened under load testing before this fix: adding the
+// idempotency store's own separate pool alongside the WAL's produced
+// request failures that the WAL alone did not. With dsn empty, both
+// fall back to independent in-memory stores (no sharing needed, since
+// neither talks to a real database).
+func buildStores(ctx context.Context, dsn string) (wal.Store, idempotency.Store) {
 	if dsn == "" {
-		log.Println("DATABASE_URL not set — using in-memory store (not durable across restarts)")
-		return wal.NewInMemoryStore()
+		log.Println("DATABASE_URL not set — using in-memory stores (not durable across restarts)")
+		return wal.NewInMemoryStore(), idempotency.NewInMemoryStore()
 	}
 
-	pgStore, err := wal.NewPostgresStore(dsn)
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
+		log.Fatalf("failed to open Postgres connection: %v", err)
+	}
+	db.SetMaxOpenConns(15)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	if err := db.Ping(); err != nil {
 		log.Fatalf("failed to connect to Postgres: %v", err)
 	}
-	if err := pgStore.EnsureSchema(ctx); err != nil {
+
+	walStore := wal.NewPostgresStoreFromDB(db)
+	if err := walStore.EnsureSchema(ctx); err != nil {
 		log.Fatalf("failed to create ledger_events schema: %v", err)
 	}
 	log.Println("WAL persisting to Postgres")
-	return pgStore
-}
 
-// buildIdempotencyStore picks Postgres if dsn is non-empty, otherwise an
-// in-memory store. An in-memory idempotency store forgets every key it
-// has ever seen on restart, which can let a resubmitted request with a
-// previously-committed idempotency key execute a second time — the
-// Postgres-backed store closes that gap by persisting records
-// alongside the ledger's own event log.
-func buildIdempotencyStore(ctx context.Context, dsn string) idempotency.Store {
-	if dsn == "" {
-		log.Println("DATABASE_URL not set — idempotency keys are in-memory only (do not survive a restart)")
-		return idempotency.NewInMemoryStore()
-	}
-
-	pgStore, err := idempotency.NewPostgresStore(dsn)
-	if err != nil {
-		log.Fatalf("failed to connect idempotency store to Postgres: %v", err)
-	}
-	if err := pgStore.EnsureSchema(ctx); err != nil {
+	idemStore := idempotency.NewPostgresStoreFromDB(db)
+	if err := idemStore.EnsureSchema(ctx); err != nil {
 		log.Fatalf("failed to create idempotency_keys schema: %v", err)
 	}
-	log.Println("Idempotency keys persisting to Postgres")
-	return pgStore
+	log.Println("Idempotency keys persisting to Postgres (shared connection pool with WAL)")
+
+	return walStore, idemStore
 }
 
 // buildPublisher picks Redis Streams if Upstash credentials are set,
