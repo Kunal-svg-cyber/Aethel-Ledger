@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 
@@ -17,17 +18,44 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
-// NewPostgresStore opens a connection pool against dsn and verifies
-// connectivity with a Ping.
+// NewPostgresStore opens a connection pool against dsn, applies
+// conservative pool limits (see configurePool), and verifies
+// connectivity with a Ping. Use this when wal is the only component
+// talking to Postgres; when idempotency also persists to the same
+// database, prefer NewPostgresStoreFromDB with a shared *sql.DB instead
+// — see the comment there for why.
 func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("wal: open postgres: %w", err)
 	}
+	configurePool(db)
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("wal: ping postgres: %w", err)
 	}
 	return &PostgresStore{db: db}, nil
+}
+
+// NewPostgresStoreFromDB wraps an existing, already-configured *sql.DB.
+// Used by main.go to share one connection pool between the WAL and
+// idempotency Postgres stores instead of each opening its own —
+// avoiding two independent, unbounded pools racing for the same
+// database's connection limit under concurrent load.
+func NewPostgresStoreFromDB(db *sql.DB) *PostgresStore {
+	return &PostgresStore{db: db}
+}
+
+// configurePool bounds how many connections this process will open
+// against Postgres. An unbounded pool (database/sql's default) lets Go
+// open a new connection for every concurrent request with no idle one
+// available — under real concurrent load against a provider with a
+// connection cap (as most managed/pooled Postgres services have,
+// including Supabase's session pooler), this can exhaust the limit and
+// turn into outright request failures rather than just added latency.
+func configurePool(db *sql.DB) {
+	db.SetMaxOpenConns(15)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxLifetime(5 * time.Minute)
 }
 
 const createTableSQL = `
