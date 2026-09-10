@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -18,17 +19,44 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
-// NewPostgresStore opens a connection pool against dsn and verifies
-// connectivity with a Ping.
+// NewPostgresStore opens a connection pool against dsn, applies
+// conservative pool limits, and verifies connectivity with a Ping. When
+// the WAL also persists to the same database, prefer
+// NewPostgresStoreFromDB with a shared *sql.DB instead — see the
+// comment there for why.
 func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("idempotency: open postgres: %w", err)
 	}
+	configurePool(db)
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("idempotency: ping postgres: %w", err)
 	}
 	return &PostgresStore{db: db}, nil
+}
+
+// NewPostgresStoreFromDB wraps an existing, already-configured *sql.DB.
+// Used by main.go to share one connection pool between the idempotency
+// and WAL Postgres stores instead of each opening its own. This isn't
+// just an efficiency nicety: under concurrent load, two independent,
+// unbounded connection pools against the same database can together
+// exceed the provider's connection limit even if either alone would
+// have been fine — this was measured directly, not theoretical: adding
+// a second, separately-pooled Postgres store (this one) produced
+// request failures under the same load profile that the WAL alone
+// handled cleanly.
+func NewPostgresStoreFromDB(db *sql.DB) *PostgresStore {
+	return &PostgresStore{db: db}
+}
+
+// configurePool bounds how many connections this process opens against
+// Postgres, so concurrent load can't exhaust a provider's connection
+// limit — see the equivalent comment in internal/wal/postgres_store.go.
+func configurePool(db *sql.DB) {
+	db.SetMaxOpenConns(15)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxLifetime(5 * time.Minute)
 }
 
 const createTableSQL = `
