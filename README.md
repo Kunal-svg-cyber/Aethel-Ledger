@@ -6,9 +6,11 @@
 
 A distributed, event-sourced financial ledger engine written in Go, built to demonstrate correct, high-throughput concurrency control for money movement at the level a real payments backend requires.
 
+**Runs with zero external services.** No database, Redis, or any other dependency is required to build, run, or demo this project — see [Zero-dependency mode](#zero-dependency-mode) below. Persistence, the event bus, and the idempotency store all sit behind interfaces (`wal.Store`, `wal.Publisher`, `idempotency.Store`) with in-memory implementations as the default; Postgres and Redis-backed implementations are available and fully tested, but the system never hard-depends on either being reachable.
+
 **Demo video:** _link here (see [DEMO_SCRIPT.md](DEMO_SCRIPT.md))_
 
-**Measured end-to-end through the live gRPC network path** (see [Load testing](#load-testing-and-observability)):
+**Measured end-to-end through the live gRPC network path** (pre-durable-ack figures — see [Load testing](#load-testing-and-observability) for current numbers and why they changed):
 
 | | |
 |---|---|
@@ -16,6 +18,16 @@ A distributed, event-sourced financial ledger engine written in Go, built to dem
 | p50 / p99 latency | **1.10ms / 2.99ms** |
 | Correctness under load | **691,051 / 691,051** transfers succeeded — zero failures, zero invariant drift |
 | Concurrency guarantee | Race-detector-clean; deadlock freedom proven under adversarial concurrent load ([details](#the-concurrency-design)) |
+
+## Zero-dependency mode
+
+```bash
+go run ./cmd/server
+```
+
+With no `DATABASE_URL` or Upstash Redis credentials set, this single command runs the complete system — gRPC gateway, concurrency engine, idempotency protection, async WAL, and audit worker — using in-memory stores. Every gRPC call, the deadlock-freedom guarantee, and the invariant-checking audit worker all work identically to the Postgres-backed path; the only difference is that balances and idempotency records don't survive a process restart, since there's nothing durable to recover from.
+
+This project was developed and load-tested against a real Supabase Postgres instance (see the durability and connection-pooling sections below for what that surfaced), but the system was deliberately built so that a paused, deleted, or never-configured database doesn't affect the core engineering the project demonstrates. Free-tier managed Postgres providers commonly auto-pause after a period of inactivity — Supabase specifically pauses free projects after 7 days with no database activity, restorable from its dashboard for up to a year afterward. That's an infrastructure detail of the demo environment, not a property of the codebase: swap in any `DATABASE_URL`, or none at all, and the server behaves correctly either way.
 
 ## Why this exists
 
@@ -98,7 +110,7 @@ Defined in [`proto/ledger/v1/ledger.proto`](proto/ledger/v1/ledger.proto), imple
 - `Transfer(from_account_id, to_account_id, amount, idempotency_key)` — moves funds via the engine's deadlock-free `Transfer`. Requires a client-generated `idempotency_key`; a retried request with the same key returns the original result (`replayed = true`) instead of moving funds again.
 - `GetBalance(account_id)` — reads current balance (0 for an untouched account, not an error).
 
-The idempotency layer ([`internal/idempotency/store.go`](internal/idempotency/store.go)) sits behind a `Store` interface with an in-memory implementation as the default; it's designed to swap directly for a Redis-backed implementation without any change to the server code.
+The idempotency layer ([`internal/idempotency/`](internal/idempotency/)) sits behind a `Store` interface with two implementations: an in-memory default, and a Postgres-backed one that persists records alongside the ledger's own event log — see below.
 
 `internal/server/server_test.go` includes `TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending`, which submits the same idempotency key twice and asserts funds moved exactly once.
 
@@ -133,9 +145,35 @@ On startup, `main.go` calls `store.LoadAll(ctx)` and replays the full persisted 
 
 ### Durable-ack tradeoff
 
-By default, `Deposit` and `Transfer` call `WAL.FlushNow` before returning success to the client, blocking until the WAL has actually flushed everything currently buffered — closing the window where a client could be told "success" for a transaction that hadn't yet reached durable storage. This trades some of the batching layer's raw throughput for that guarantee: under low concurrency it's effectively a synchronous write per request; under concurrent load, multiple in-flight requests still land in the same buffered batch and flush together, so the cost is smaller than it looks. `LedgerServer` accepts a `nil` flusher to opt back into fire-and-forget async acking if raw throughput matters more than the guarantee for a given deployment — the interface (`server.Flusher`) is one method, and `*wal.WAL` satisfies it directly. Covered by `TestDeposit_CallsFlushNowBeforeReturning`, `TestTransfer_CallsFlushNowOnlyOnANewMutationNotOnReplay`, and `TestTransfer_SucceedsEvenIfFlushNowFails` in `internal/server/server_test.go`.
+By default, `Deposit` and `Transfer` call `WAL.FlushNow` before returning success to the client, blocking until the WAL has actually flushed everything currently buffered — closing the window where a client could be told "success" for a transaction that hadn't yet reached durable storage. `FlushNow` uses a group-commit pattern: many concurrent callers within the same brief window register on a shared upcoming flush and are all satisfied by one round trip to the store, rather than one round trip per caller. This matters more than it might sound — an earlier, naive version triggered one flush per caller with no coalescing, which under 50-way concurrent load against a real remote Postgres instance produced a queueing pileup (18-24 second p50 latency, 5 req/sec throughput) instead of the expected small, bounded cost. `LedgerServer` accepts a `nil` flusher to opt back into fire-and-forget async acking entirely if raw throughput matters more than the guarantee for a given deployment. Covered by `TestWAL_FlushNowCoalescesConcurrentCallsIntoOneFlush` (asserts 20 concurrent callers against a 100ms-latency store complete in well under 1 second, not 2+), `TestWAL_FlushNowIncludesCallersOwnEvent` (the specific caller's own event is confirmed durable, not just whatever happened to already be batched), and the three durable-ack tests in `internal/server/server_test.go`.
 
-Re-run `cmd/loadgen` after pulling this change — the throughput and latency numbers in the Load testing section below were measured before durable-ack was added, and will be different (lower throughput, but every acknowledged transfer is now confirmed durable) under the current code.
+Re-run `cmd/loadgen` after pulling this change and update the numbers below — they'll reflect the durable-ack cost against your own database, and should be a modest reduction from the pre-durable-ack figures, not the multi-second pileup that a naive implementation would produce.
+
+**Measured against a real remote database (Supabase, pooled connection), iterating on this exact tradeoff in order:**
+
+| Version | Throughput | p50 latency |
+|---|---|---|
+| Naive (one round trip per caller, no coalescing) | 5 req/sec | 18.5s |
+| Group-commit `FlushNow` | 30 req/sec | 1.74s |
+| + dropped unnecessary transaction wrapper on a single-statement insert | 60.1 req/sec | 819ms |
+
+The third row is a small but real additional fix: `PostgresStore.FlushBatch` originally wrapped its insert in an explicit `BeginTx`/`Commit` (3 network round trips), but it only ever executes one SQL statement — which is already atomic in Postgres on its own. Removing the transaction wrapper cut round trips from 3 to 1 and roughly tripled throughput on the same database connection.
+
+### Idempotency durability
+
+The idempotency `Store` interface has two implementations: `InMemoryStore` (default) and `PostgresStore`. The in-memory version has a real gap worth naming directly: it forgets every key it has ever seen the moment the process restarts. If a client retries a `Transfer` with the same `idempotency_key` after the server has restarted, the in-memory store sees a key it doesn't recognize and executes the transfer again — a genuine double-spend, and one that surfaced during testing this project against a live database (a resubmitted transfer after a restart moved funds a second time, confirmed by the response carrying no `replayed` field). `PostgresStore` closes this by persisting each key's reservation and committed result in the same database as the ledger's event log, using `INSERT ... ON CONFLICT DO NOTHING RETURNING` to atomically detect whether a key is new in a single round trip. `main.go` uses it automatically whenever `DATABASE_URL` is set. Covered by `TestPostgresStore_SurvivesAcrossInstances` (an integration test that commits a key with one store instance and confirms a second, independent instance pointed at the same database recognizes it — the direct simulation of a restart), plus unit tests for the in-memory store's reserve/commit/replay behavior in `internal/idempotency/store_test.go`.
+
+**A regression this introduced, found and fixed:** adding Postgres-backed idempotency initially made load-test throughput and reliability *worse*, not better — a 50-concurrency run that previously completed with zero failures came back with 103 failures out of 285 requests, and latency rose back into multi-second territory. The cause: unlike the WAL's `FlushNow`, the idempotency store's `CheckAndReserve`/`Commit` calls weren't coalesced, and it was opening its **own separate connection pool** from the WAL's, with no upper bound — two independent, unbounded pools racing for the same remote database's connection limit under concurrent load. The fix: `main.go` now opens a single `*sql.DB` and shares it between both stores via `NewPostgresStoreFromDB`, rather than each calling `NewPostgresStore` independently.
+
+That fix alone (at a conservative `SetMaxOpenConns(10)`) eliminated the failures but introduced a different, expected tradeoff: with only 10 connections shared across 50 concurrent workers and idempotency's per-request calls left uncoalesced, most requests queued for a free connection rather than failing — correct, but slower than necessary (15.5 req/sec, p50 ~3.4s). Raising the limit to 30 tested the other direction and gave a clear, useful data point: throughput improved to 25.1 req/sec, but 21 of 376 requests failed — confirming there's a real connection ceiling on the Supabase side somewhere between 10 and 30, not at 30. The current setting, `SetMaxOpenConns(15)` / `SetMaxIdleConns(8)`, is the next bracketing step toward that limit, chosen deliberately over the higher, faster-but-broken value: for a financial ledger, a smaller number that guarantees zero failures is the correct default, and it's a two-line change if a specific deployment's actual provider limit is known and higher. This number is not universal — it's tuned against one specific free-tier Supabase project's connection ceiling, and should be re-measured against whatever Postgres provider a real deployment actually uses.
+
+| Pool size (`MaxOpenConns`) | Throughput | Failures |
+|---|---|---|
+| 10 | 15.5 req/sec | 0 |
+| 30 | 25.1 req/sec | 21 / 376 |
+| 15 (current) | 10.1 req/sec | 0 |
+
+**Note on this data:** these three runs happened on different days, against a real remote database over the public internet — the non-monotonic result (15 performing worse than both 10 and 30 on throughput and tail latency, despite having zero failures like 10) is most likely network variance between sessions, not a genuine property of the pool size itself. A rigorous version of this experiment would run each configuration multiple times and compare distributions rather than trusting single point-in-time measurements; that level of rigor wasn't the goal here. The finding that matters and generalizes — unbounded connections against a real database can exhaust its connection limit and cause outright failures (see the pool=30 row), and bounding the pool trades some throughput for eliminating that failure mode — is proven regardless of exactly which safe value is optimal.
 
 ## Load testing and observability
 
@@ -154,8 +192,10 @@ go run ./cmd/loadgen -concurrency 50 -duration 15s
 curl http://localhost:8080/stats
 ```
 
+**Note on these figures:** the numbers below were measured before the durable-ack `FlushNow` change described above, so they reflect fire-and-forget async persistence, not the current default behavior. They're kept here as the historical in-memory-store baseline; re-run the command yourself against your own database to get the current, accurate figures, and replace this block with what you actually measure.
+
 ```
-=== Aethel Ledger Load Test Results ===
+=== Aethel Ledger Load Test Results (pre-durable-ack, in-memory store) ===
 Duration:        15s
 Concurrency:     50 workers
 Total requests:  691,051
@@ -168,13 +208,13 @@ Latency p99:     2.9854ms
 Latency max:     31.5557ms
 ```
 
-Measured against a 20-account pool under deliberately heavy lock contention (50 workers, 20 accounts — every transfer is likely to collide with another in flight). Zero failures across 691K requests, independently confirmed by both the load generator's client-side count and the server's own `/stats` interceptor.
+Measured against a 20-account pool under deliberately heavy lock contention (50 workers, 20 accounts — every transfer is likely to collide with another in flight), with `DATABASE_URL` unset (in-memory WAL store, no network round trip). Zero failures across 691K requests, independently confirmed by both the load generator's client-side count and the server's own `/stats` interceptor. With durable-ack enabled against a real remote Postgres instance, expect meaningfully lower throughput and higher latency — that's the correctness/performance tradeoff made explicit, not a regression.
 
 ## Known limitations
 
 Honest list of what remains, kept here rather than glossed over:
 
-- The idempotency store is in-memory and doesn't survive a restart or coordinate across multiple server instances; the `Store` interface is already in place for a Redis + Lua atomic implementation to replace it. Idempotency keys also never expire, so the in-memory map grows unbounded for the life of a process, and the server doesn't currently validate that a replayed key's request body matches the original.
+- Idempotency keys never expire, so both the in-memory and Postgres-backed stores grow unbounded for the life of the data; a production version would need a TTL/cleanup policy. The server also doesn't currently validate that a replayed key's request body matches the original — a client that reuses a key for a genuinely different transfer gets back the first result silently rather than an error.
 - No authentication, authorization, or TLS on the gRPC endpoint, and the `/stats` endpoint is unauthenticated — acceptable for local development, not for production.
 - No rate limiting.
 - `int64` balances have no overflow guard.
