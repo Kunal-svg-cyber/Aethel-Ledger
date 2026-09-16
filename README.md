@@ -175,6 +175,14 @@ That fix alone (at a conservative `SetMaxOpenConns(10)`) eliminated the failures
 
 **Note on this data:** these three runs happened on different days, against a real remote database over the public internet — the non-monotonic result (15 performing worse than both 10 and 30 on throughput and tail latency, despite having zero failures like 10) is most likely network variance between sessions, not a genuine property of the pool size itself. A rigorous version of this experiment would run each configuration multiple times and compare distributions rather than trusting single point-in-time measurements; that level of rigor wasn't the goal here. The finding that matters and generalizes — unbounded connections against a real database can exhaust its connection limit and cause outright failures (see the pool=30 row), and bounding the pool trades some throughput for eliminating that failure mode — is proven regardless of exactly which safe value is optimal.
 
+### Balance overflow protection
+
+`Deposit` and `Transfer` now reject an operation that would overflow an `int64` balance (`ErrBalanceOverflow`, mapped to `codes.FailedPrecondition`), checked *before* either balance is mutated — so a rejected overflow leaves both accounts completely unchanged rather than partially applying. This closes a real, if extreme, correctness gap: without it, a balance could silently wrap around to a large negative number. Purely additive — every ordinary amount used anywhere else in this codebase or its tests is unaffected, which is itself asserted by `TestDeposit_OrdinaryAmountsAreUnaffectedByOverflowCheck`. See `TestDeposit_RejectsAmountThatWouldOverflowBalance` and `TestTransfer_RejectsAmountThatWouldOverflowRecipientBalance` in `internal/ledger/engine_test.go`.
+
+### Rate limiting
+
+`internal/ratelimit/` implements a token-bucket limiter using only the standard library (`sync.Mutex` and `time`, no external dependency like `golang.org/x/time/rate`), wired in as a second gRPC interceptor alongside the metrics recorder via `grpc.ChainUnaryInterceptor`. The default in `main.go` — 5,000 req/sec sustained, burst of 2,000 — is set well above every load test result measured against this project so far (peak ~46K/sec in-memory fire-and-forget, ~10-25/sec durable-ack against a real remote database), so it protects against runaway or malicious traffic without being reachable by any legitimate load demonstrated here; lower it for a deployment with a smaller expected traffic ceiling. Tested in isolation for burst capacity, refill-over-time behavior, a hard cap on token accumulation during an idle period, and correctness under 100 concurrent callers racing for a burst of 10 (`internal/ratelimit/limiter_test.go`) — the concurrent test is exactly the kind of race the ledger engine itself is built to prevent, applied to a second piece of the system.
+
 ## Load testing and observability
 
 - **`/stats` endpoint** ([`internal/metrics/`](internal/metrics/)) — live per-RPC metrics as JSON at `http://localhost:8080/stats`: success/failure counts and p50/p95/p99/max latency, per method. Wired in as a gRPC unary interceptor ([`interceptor.go`](internal/metrics/interceptor.go)), so no individual RPC handler needs to change.
@@ -216,8 +224,6 @@ Honest list of what remains, kept here rather than glossed over:
 
 - Idempotency keys never expire, so both the in-memory and Postgres-backed stores grow unbounded for the life of the data; a production version would need a TTL/cleanup policy. The server also doesn't currently validate that a replayed key's request body matches the original — a client that reuses a key for a genuinely different transfer gets back the first result silently rather than an error.
 - No authentication, authorization, or TLS on the gRPC endpoint, and the `/stats` endpoint is unauthenticated — acceptable for local development, not for production.
-- No rate limiting.
-- `int64` balances have no overflow guard.
 - Single-node: no partitioning or horizontal scaling of the engine itself.
 - The audit worker logs on invariant drift but doesn't page, alert, or halt traffic.
 - WAL flush failures are logged and the batch is dropped, with no retry-with-backoff or local spill-to-disk yet.
