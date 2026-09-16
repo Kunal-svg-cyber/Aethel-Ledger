@@ -135,6 +135,8 @@ func toGRPCError(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, ledger.ErrInsufficientFunds):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, ledger.ErrBalanceOverflow):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
