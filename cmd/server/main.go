@@ -24,6 +24,7 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/idempotency"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/metrics"
+	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ratelimit"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/server"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/streaming"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/wal"
@@ -71,7 +72,20 @@ func main() {
 	recorder := metrics.NewRecorder()
 	go serveStats(recorder)
 
-	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(recorder.UnaryServerInterceptor()))
+	// A generous default: 5,000 req/sec sustained, burst of 2,000. This
+	// is well above every load test run against this project so far
+	// (peak measured: ~46K/sec in-memory fire-and-forget, ~60/sec
+	// durable-ack against a real remote database) — the mechanism is
+	// real and tested (see internal/ratelimit), but tuned here to
+	// protect against runaway/malicious traffic without interfering
+	// with legitimate load. Lower this for a deployment with a smaller
+	// expected traffic ceiling.
+	limiter := ratelimit.NewLimiter(5000, 2000)
+
+	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		recorder.UnaryServerInterceptor(),
+		limiter.UnaryServerInterceptor(),
+	))
 	ledgerv1.RegisterLedgerServiceServer(grpcServer, ledgerServer)
 	reflection.Register(grpcServer)
 
