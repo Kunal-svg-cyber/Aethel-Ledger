@@ -6,7 +6,7 @@
 
 A distributed, event-sourced financial ledger engine written in Go — built to demonstrate correct, high-throughput concurrency control for money movement at the level a real payments backend requires, and load-tested against a live remote database until it broke, so the fixes are real.
 
-**Demo video:** _link here (see [DEMO_SCRIPT.md](DEMO_SCRIPT.md))_
+**Demo video:** _link here_
 
 ## Highlights
 
