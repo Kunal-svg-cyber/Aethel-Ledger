@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
+	"math"
 	"sync"
 	"sync/atomic"
 )
@@ -21,6 +22,7 @@ var (
 	ErrInvalidAmount     = errors.New("ledger: amount must be positive")
 	ErrInsufficientFunds = errors.New("ledger: insufficient funds")
 	ErrSameAccount       = errors.New("ledger: cannot transfer to the same account")
+	ErrBalanceOverflow   = errors.New("ledger: operation would overflow the account balance")
 )
 
 // account holds mutable state for a single ledger account, guarded by
@@ -88,6 +90,10 @@ func (e *Engine) Deposit(_ context.Context, id string, amount int64) (int64, err
 	a := e.getOrCreate(id)
 
 	a.mu.Lock()
+	if wouldOverflowAdd(a.balance, amount) {
+		a.mu.Unlock()
+		return 0, ErrBalanceOverflow
+	}
 	a.balance += amount
 	bal := a.balance
 	a.mu.Unlock()
@@ -133,6 +139,9 @@ func (e *Engine) Transfer(_ context.Context, from, to string, amount int64) erro
 
 	if af.balance < amount {
 		return ErrInsufficientFunds
+	}
+	if wouldOverflowAdd(at.balance, amount) {
+		return ErrBalanceOverflow
 	}
 	af.balance -= amount
 	at.balance += amount
@@ -225,4 +234,19 @@ func (e *Engine) emit(ev Event) {
 	case e.events <- ev:
 	default:
 	}
+}
+
+// wouldOverflowAdd reports whether current+amount would overflow int64.
+// Both balances and amounts are always non-negative in this engine
+// (enforced by ErrInvalidAmount and ErrInsufficientFunds), so only the
+// upper-bound case can occur in practice; the lower-bound check is kept
+// for defense in depth rather than being reachable today.
+func wouldOverflowAdd(current, amount int64) bool {
+	if amount > 0 && current > math.MaxInt64-amount {
+		return true
+	}
+	if amount < 0 && current < math.MinInt64-amount {
+		return true
+	}
+	return false
 }

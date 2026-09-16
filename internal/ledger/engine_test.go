@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"sync"
 	"testing"
@@ -59,6 +60,60 @@ func TestRestore_OnEmptyHistoryLeavesEngineAtZero(t *testing.T) {
 	}
 	if got := e.Balance("alice"); got != 0 {
 		t.Fatalf("balance after empty restore = %d, want 0", got)
+	}
+}
+
+func TestDeposit_RejectsAmountThatWouldOverflowBalance(t *testing.T) {
+	e := NewEngine(nil)
+	ctx := context.Background()
+
+	if _, err := e.Deposit(ctx, "alice", math.MaxInt64-10); err != nil {
+		t.Fatalf("setup deposit failed: %v", err)
+	}
+	if _, err := e.Deposit(ctx, "alice", 100); err != ErrBalanceOverflow {
+		t.Fatalf("got %v, want ErrBalanceOverflow", err)
+	}
+	// Balance must be unchanged after a rejected overflow.
+	if got := e.Balance("alice"); got != math.MaxInt64-10 {
+		t.Fatalf("balance = %d, want unchanged at MaxInt64-10", got)
+	}
+}
+
+func TestTransfer_RejectsAmountThatWouldOverflowRecipientBalance(t *testing.T) {
+	e := NewEngine(nil)
+	ctx := context.Background()
+
+	if _, err := e.Deposit(ctx, "alice", 1000); err != nil {
+		t.Fatalf("setup deposit failed: %v", err)
+	}
+	if _, err := e.Deposit(ctx, "bob", math.MaxInt64-10); err != nil {
+		t.Fatalf("setup deposit failed: %v", err)
+	}
+
+	err := e.Transfer(ctx, "alice", "bob", 100)
+	if err != ErrBalanceOverflow {
+		t.Fatalf("got %v, want ErrBalanceOverflow", err)
+	}
+	// Neither balance should move on a rejected overflow — the check
+	// must happen before either mutation, not after a partial one.
+	if got := e.Balance("alice"); got != 1000 {
+		t.Fatalf("alice balance = %d, want unchanged at 1000", got)
+	}
+	if got := e.Balance("bob"); got != math.MaxInt64-10 {
+		t.Fatalf("bob balance = %d, want unchanged at MaxInt64-10", got)
+	}
+}
+
+func TestDeposit_OrdinaryAmountsAreUnaffectedByOverflowCheck(t *testing.T) {
+	// Guards against the overflow check being too aggressive: every
+	// amount used elsewhere in this test suite and in the load
+	// generator must still work exactly as before.
+	e := NewEngine(nil)
+	ctx := context.Background()
+	for _, amount := range []int64{1, 100, 1000, 1_000_000, 1_000_000_000} {
+		if _, err := e.Deposit(ctx, "alice", amount); err != nil {
+			t.Fatalf("ordinary deposit of %d unexpectedly failed: %v", amount, err)
+		}
 	}
 }
 
