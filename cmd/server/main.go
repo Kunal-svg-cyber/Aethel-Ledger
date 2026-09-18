@@ -1,8 +1,4 @@
-// Command server starts the Aethel Ledger gRPC gateway, wired to the
-// concurrency engine, async WAL, idempotency layer, event bus, and
-// audit worker. Degrades gracefully with zero configuration: without
-// DATABASE_URL or Upstash Redis credentials, it runs entirely
-// in-process with in-memory stores.
+
 package main
 
 import (
@@ -45,9 +41,6 @@ func main() {
 	store, idemStore := buildStores(ctx, dsn)
 	publisher := buildPublisher(ctx, auditWorker)
 
-	// Recover state from durable storage before serving any traffic.
-	// Without this, every restart would silently reset all balances to
-	// zero despite the full event history sitting in Postgres.
 	history, err := store.LoadAll(ctx)
 	if err != nil {
 		log.Fatalf("failed to load event history: %v", err)
@@ -72,14 +65,6 @@ func main() {
 	recorder := metrics.NewRecorder()
 	go serveStats(recorder)
 
-	// A generous default: 5,000 req/sec sustained, burst of 2,000. This
-	// is well above every load test run against this project so far
-	// (peak measured: ~46K/sec in-memory fire-and-forget, ~60/sec
-	// durable-ack against a real remote database) — the mechanism is
-	// real and tested (see internal/ratelimit), but tuned here to
-	// protect against runaway/malicious traffic without interfering
-	// with legitimate load. Lower this for a deployment with a smaller
-	// expected traffic ceiling.
 	limiter := ratelimit.NewLimiter(5000, 2000)
 
 	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
@@ -94,12 +79,6 @@ func main() {
 		log.Fatalf("failed to listen on %s: %v", listenAddr, err)
 	}
 
-	// On SIGINT/SIGTERM, stop accepting new RPCs and let in-flight ones
-	// finish, then cancel the WAL/audit context so WAL.Run performs its
-	// final flush before the process exits. Without this, a normal
-	// Ctrl+C or container SIGTERM kills the process immediately and any
-	// buffered-but-unflushed events are lost, since Go does not run
-	// deferred functions on an unhandled signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -119,16 +98,6 @@ func main() {
 	log.Println("shutdown complete")
 }
 
-// buildStores constructs the WAL and idempotency stores. When dsn is
-// set, both share ONE underlying *sql.DB connection pool rather than
-// each opening its own — two independent, unbounded pools against the
-// same database can together exceed the provider's connection limit
-// under concurrent load even if either alone would be fine, which is
-// exactly what happened under load testing before this fix: adding the
-// idempotency store's own separate pool alongside the WAL's produced
-// request failures that the WAL alone did not. With dsn empty, both
-// fall back to independent in-memory stores (no sharing needed, since
-// neither talks to a real database).
 func buildStores(ctx context.Context, dsn string) (wal.Store, idempotency.Store) {
 	if dsn == "" {
 		log.Println("DATABASE_URL not set — using in-memory stores (not durable across restarts)")
@@ -161,8 +130,6 @@ func buildStores(ctx context.Context, dsn string) (wal.Store, idempotency.Store)
 	return walStore, idemStore
 }
 
-// buildPublisher picks Redis Streams if Upstash credentials are set,
-// otherwise wires the audit worker directly in-process.
 func buildPublisher(ctx context.Context, auditWorker *audit.Worker) wal.Publisher {
 	redisURL := os.Getenv("UPSTASH_REDIS_REST_URL")
 	redisToken := os.Getenv("UPSTASH_REDIS_REST_TOKEN")
@@ -199,8 +166,6 @@ func logInvariantPeriodically(ctx context.Context, w *audit.Worker) {
 	}
 }
 
-// serveStats exposes per-RPC counts and latency percentiles as JSON at
-// http://localhost:8080/stats.
 func serveStats(recorder *metrics.Recorder) {
 	mux := http.NewServeMux()
 	mux.Handle("/stats", recorder.Handler())
@@ -209,3 +174,4 @@ func serveStats(recorder *metrics.Recorder) {
 		log.Printf("stats server error: %v", err)
 	}
 }
+
