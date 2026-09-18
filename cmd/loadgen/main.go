@@ -1,12 +1,4 @@
-// Command loadgen is a standalone gRPC load generator for Aethel
-// Ledger. It seeds a pool of accounts, then fires concurrent Transfer
-// requests against a running server for a fixed duration, measuring
-// real network-measured throughput and latency, including gRPC
-// serialization and round-trip cost.
-//
-// Usage:
-//
-//	go run ./cmd/loadgen -addr localhost:50051 -concurrency 50 -duration 15s
+
 package main
 
 import (
@@ -92,8 +84,6 @@ func main() {
 	report(*duration, *concurrency, successCount, failureCount, latencies)
 }
 
-// seedAccounts deposits a large starting balance into numAccounts fresh
-// accounts so the load test doesn't hit insufficient-funds errors.
 func seedAccounts(ctx context.Context, client ledgerv1.LedgerServiceClient, numAccounts int) []string {
 	accounts := make([]string, numAccounts)
 	for i := range accounts {
@@ -145,3 +135,4 @@ func percentile(sorted []time.Duration, p float64) time.Duration {
 	}
 	return sorted[idx]
 }
+
