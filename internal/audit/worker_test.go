@@ -14,10 +14,10 @@ func TestWorker_ConservationHoldsAfterDepositsAndTransfers(t *testing.T) {
 	w.Apply(ledger.Event{Type: ledger.EventTransfer, Account: "alice", CounterAccount: "bob", Amount: 300})
 	w.Apply(ledger.Event{Type: ledger.EventTransfer, Account: "bob", CounterAccount: "alice", Amount: 100})
 
-	if got := w.Balance("alice"); got != 800 { // 1000 - 300 + 100
+	if got := w.Balance("alice"); got != 800 {
 		t.Fatalf("alice derived balance = %d, want 800", got)
 	}
-	if got := w.Balance("bob"); got != 700 { // 500 + 300 - 100
+	if got := w.Balance("bob"); got != 700 {
 		t.Fatalf("bob derived balance = %d, want 700", got)
 	}
 
@@ -69,3 +69,4 @@ func TestParseEvent_RejectsMalformedAmount(t *testing.T) {
 		t.Fatal("expected an error for a non-numeric amount field")
 	}
 }
+

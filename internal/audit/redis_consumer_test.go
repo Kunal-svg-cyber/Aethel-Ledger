@@ -7,7 +7,6 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/streaming"
 )
 
-// fakeReader implements StreamReader for deterministic tests.
 type fakeReader struct {
 	calls [][]streaming.StreamEntry
 	seen  []string
@@ -82,3 +81,4 @@ func TestRedisConsumer_SkipsMalformedEntriesWithoutStoppingTheLoop(t *testing.T)
 		t.Fatalf("alice = %d, want 500", got)
 	}
 }
+
