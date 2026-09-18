@@ -1,8 +1,4 @@
-// Package ledger implements Aethel Ledger's in-memory, thread-safe
-// balance engine using deterministic sharded locking: accounts are
-// partitioned across shards, each account has its own mutex, and
-// multi-account operations always lock in ID order to make deadlock
-// structurally impossible (see Transfer).
+
 package ledger
 
 import (
@@ -14,8 +10,6 @@ import (
 	"sync/atomic"
 )
 
-// numShards controls account-map partition count; higher reduces
-// map-lock contention on creation/lookup.
 const numShards = 32
 
 var (
@@ -25,28 +19,23 @@ var (
 	ErrBalanceOverflow   = errors.New("ledger: operation would overflow the account balance")
 )
 
-// account holds mutable state for a single ledger account, guarded by
-// its own mutex.
 type account struct {
 	mu      sync.Mutex
 	id      string
-	balance int64 // integer minor units — never float64 for money
+	balance int64
 }
 
-// shard is one partition of the account map, protected by its own RWMutex.
 type shard struct {
 	mu       sync.RWMutex
 	accounts map[string]*account
 }
 
-// Engine is the in-memory, thread-safe ledger core.
 type Engine struct {
 	shards [numShards]*shard
-	events chan<- Event // WAL sink; nil is valid for tests/benchmarks
+	events chan<- Event
 	seq    int64
 }
 
-// NewEngine constructs an Engine. Pass nil for events if none are needed.
 func NewEngine(events chan<- Event) *Engine {
 	e := &Engine{events: events}
 	for i := range e.shards {
@@ -61,7 +50,6 @@ func (e *Engine) shardFor(id string) *shard {
 	return e.shards[h.Sum32()%numShards]
 }
 
-// getOrCreate returns the account for id, creating it on first touch.
 func (e *Engine) getOrCreate(id string) *account {
 	s := e.shardFor(id)
 
@@ -82,7 +70,6 @@ func (e *Engine) getOrCreate(id string) *account {
 	return a
 }
 
-// Deposit credits amount into id and returns the resulting balance.
 func (e *Engine) Deposit(_ context.Context, id string, amount int64) (int64, error) {
 	if amount <= 0 {
 		return 0, ErrInvalidAmount
@@ -102,20 +89,6 @@ func (e *Engine) Deposit(_ context.Context, id string, amount int64) (int64, err
 	return bal, nil
 }
 
-// Transfer atomically moves amount from `from` to `to`.
-//
-// Deadlock-freedom proof: a deadlock requires a circular wait — G1 holds
-// lock A and waits for B while G2 holds B and waits for A — which can
-// only happen if the two goroutines acquire A and B in opposite orders.
-// This function never locks in caller-supplied order; it always locks
-// the two accounts in a fixed order derived from comparing their IDs.
-// Every goroutine in the system therefore acquires the same pair of
-// locks in the same order regardless of transfer direction, making a
-// circular wait structurally impossible.
-//
-// See TestTransfer_NoDeadlockUnderReversedConcurrentPairs in
-// engine_test.go, which would hang under a hard timeout if this
-// property were violated.
 func (e *Engine) Transfer(_ context.Context, from, to string, amount int64) error {
 	if amount <= 0 {
 		return ErrInvalidAmount
@@ -153,7 +126,6 @@ func (e *Engine) Transfer(_ context.Context, from, to string, amount int64) erro
 	return nil
 }
 
-// Account reports whether id has ever been touched, without creating it.
 func (e *Engine) Account(id string) (balance int64, exists bool) {
 	s := e.shardFor(id)
 	s.mu.RLock()
@@ -167,7 +139,6 @@ func (e *Engine) Account(id string) (balance int64, exists bool) {
 	return a.balance, true
 }
 
-// Balance returns the current balance for id (0 if untouched).
 func (e *Engine) Balance(id string) int64 {
 	a := e.getOrCreate(id)
 	a.mu.Lock()
@@ -175,14 +146,6 @@ func (e *Engine) Balance(id string) int64 {
 	return a.balance
 }
 
-// Restore rebuilds engine state by replaying a previously-persisted
-// event log, in seq order — used at startup to recover balances after a
-// restart. Unlike Deposit/Transfer, it does not re-validate business
-// rules (each event already succeeded once when originally applied) and
-// does not re-emit events to the WAL sink. After replay, the internal
-// sequence counter is advanced to the highest seq seen, so subsequent
-// new events continue the sequence rather than restarting at 0 and
-// colliding with already-persisted rows.
 func (e *Engine) Restore(events []Event) {
 	var maxSeq int64
 	for _, ev := range events {
@@ -215,7 +178,6 @@ func (e *Engine) Restore(events []Event) {
 	atomic.StoreInt64(&e.seq, maxSeq)
 }
 
-// CurrentSeq returns the engine's current sequence counter value.
 func (e *Engine) CurrentSeq() int64 {
 	return atomic.LoadInt64(&e.seq)
 }
@@ -224,8 +186,6 @@ func (e *Engine) nextSeq() int64 {
 	return atomic.AddInt64(&e.seq, 1)
 }
 
-// emit is non-blocking so a slow or absent consumer never stalls the
-// balance-mutation hot path; a full channel drops the event.
 func (e *Engine) emit(ev Event) {
 	if e.events == nil {
 		return
@@ -236,11 +196,6 @@ func (e *Engine) emit(ev Event) {
 	}
 }
 
-// wouldOverflowAdd reports whether current+amount would overflow int64.
-// Both balances and amounts are always non-negative in this engine
-// (enforced by ErrInvalidAmount and ErrInsufficientFunds), so only the
-// upper-bound case can occur in practice; the lower-bound check is kept
-// for defense in depth rather than being reachable today.
 func wouldOverflowAdd(current, amount int64) bool {
 	if amount > 0 && current > math.MaxInt64-amount {
 		return true
@@ -250,3 +205,4 @@ func wouldOverflowAdd(current, amount int64) bool {
 	}
 	return false
 }
+

@@ -32,7 +32,7 @@ func TestRestore_ContinuesSequenceWithoutCollision(t *testing.T) {
 	e := NewEngine(nil)
 	history := []Event{
 		{Seq: 1, Type: EventDeposit, Account: "alice", Amount: 1000},
-		{Seq: 5, Type: EventDeposit, Account: "bob", Amount: 500}, // gap: simulates a prior process that got further
+		{Seq: 5, Type: EventDeposit, Account: "bob", Amount: 500},
 	}
 	e.Restore(history)
 
@@ -40,10 +40,6 @@ func TestRestore_ContinuesSequenceWithoutCollision(t *testing.T) {
 		t.Fatalf("CurrentSeq after restore = %d, want 5", got)
 	}
 
-	// The next event emitted by the restored engine must continue past
-	// the highest seq already persisted, not restart at 1 (which would
-	// collide with an already-committed row under ON CONFLICT DO NOTHING
-	// and silently drop the new event).
 	if _, err := e.Deposit(context.Background(), "carol", 200); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +69,7 @@ func TestDeposit_RejectsAmountThatWouldOverflowBalance(t *testing.T) {
 	if _, err := e.Deposit(ctx, "alice", 100); err != ErrBalanceOverflow {
 		t.Fatalf("got %v, want ErrBalanceOverflow", err)
 	}
-	// Balance must be unchanged after a rejected overflow.
+
 	if got := e.Balance("alice"); got != math.MaxInt64-10 {
 		t.Fatalf("balance = %d, want unchanged at MaxInt64-10", got)
 	}
@@ -94,8 +90,7 @@ func TestTransfer_RejectsAmountThatWouldOverflowRecipientBalance(t *testing.T) {
 	if err != ErrBalanceOverflow {
 		t.Fatalf("got %v, want ErrBalanceOverflow", err)
 	}
-	// Neither balance should move on a rejected overflow — the check
-	// must happen before either mutation, not after a partial one.
+
 	if got := e.Balance("alice"); got != 1000 {
 		t.Fatalf("alice balance = %d, want unchanged at 1000", got)
 	}
@@ -105,9 +100,7 @@ func TestTransfer_RejectsAmountThatWouldOverflowRecipientBalance(t *testing.T) {
 }
 
 func TestDeposit_OrdinaryAmountsAreUnaffectedByOverflowCheck(t *testing.T) {
-	// Guards against the overflow check being too aggressive: every
-	// amount used elsewhere in this test suite and in the load
-	// generator must still work exactly as before.
+
 	e := NewEngine(nil)
 	ctx := context.Background()
 	for _, amount := range []int64{1, 100, 1000, 1_000_000, 1_000_000_000} {
@@ -178,9 +171,6 @@ func TestTransfer_RejectsSameAccount(t *testing.T) {
 	}
 }
 
-// TestConcurrentTransfers_ConservesTotalBalance runs many goroutines
-// doing random transfers across a small account pool and asserts the
-// total balance is exactly conserved. Run with -race.
 func TestConcurrentTransfers_ConservesTotalBalance(t *testing.T) {
 	const (
 		numAccounts     = 12
@@ -229,9 +219,6 @@ func TestConcurrentTransfers_ConservesTotalBalance(t *testing.T) {
 	}
 }
 
-// TestTransfer_NoDeadlockUnderReversedConcurrentPairs runs concurrent
-// A->B and B->A transfers under a hard timeout, which would hang if
-// Transfer locked in caller-supplied order.
 func TestTransfer_NoDeadlockUnderReversedConcurrentPairs(t *testing.T) {
 	e := NewEngine(nil)
 	ctx := context.Background()
@@ -272,8 +259,6 @@ func TestTransfer_NoDeadlockUnderReversedConcurrentPairs(t *testing.T) {
 	}
 }
 
-// BenchmarkTransfer_Parallel measures sustained transfer throughput
-// under concurrent load.
 func BenchmarkTransfer_Parallel(b *testing.B) {
 	const numAccounts = 64
 	e := NewEngine(nil)
@@ -298,3 +283,4 @@ func BenchmarkTransfer_Parallel(b *testing.B) {
 		}
 	})
 }
+
