@@ -5,7 +5,6 @@ import (
 	"net/http"
 )
 
-// Handler serves the current Snapshot as JSON.
 func (r *Recorder) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -14,3 +13,4 @@ func (r *Recorder) Handler() http.Handler {
 		}
 	})
 }
+

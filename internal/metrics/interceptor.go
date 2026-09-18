@@ -7,7 +7,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-// UnaryServerInterceptor times every unary RPC and records it.
 func (r *Recorder) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -21,3 +20,4 @@ func (r *Recorder) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 		return resp, err
 	}
 }
+

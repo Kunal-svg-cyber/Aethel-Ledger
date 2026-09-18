@@ -1,6 +1,4 @@
-// Package metrics implements lightweight, in-process request
-// observability: per-method success/failure counts and latency
-// percentiles, with zero external dependencies.
+
 package metrics
 
 import (
@@ -9,8 +7,6 @@ import (
 	"time"
 )
 
-// Recorder collects timing and outcome data per gRPC method. Safe for
-// concurrent use.
 type Recorder struct {
 	mu      sync.Mutex
 	methods map[string]*methodStats
@@ -26,7 +22,6 @@ func NewRecorder() *Recorder {
 	return &Recorder{methods: make(map[string]*methodStats)}
 }
 
-// Record logs one completed RPC call.
 func (r *Recorder) Record(method string, dur time.Duration, failed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -44,7 +39,6 @@ func (r *Recorder) Record(method string, dur time.Duration, failed bool) {
 	m.latencies = append(m.latencies, dur)
 }
 
-// Snapshot is a point-in-time summary for one RPC method.
 type Snapshot struct {
 	Method    string  `json:"method"`
 	Success   int64   `json:"success"`
@@ -55,8 +49,6 @@ type Snapshot struct {
 	MaxMillis float64 `json:"max_ms"`
 }
 
-// Snapshot returns current stats for every recorded method, sorted by
-// method name.
 func (r *Recorder) Snapshot() []Snapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -81,8 +73,6 @@ func (r *Recorder) Snapshot() []Snapshot {
 	return out
 }
 
-// percentileMillis returns the p-th percentile (nearest-rank) of an
-// already-sorted slice, in milliseconds.
 func percentileMillis(sorted []time.Duration, p float64) float64 {
 	if len(sorted) == 0 {
 		return 0
@@ -93,3 +83,4 @@ func percentileMillis(sorted []time.Duration, p float64) float64 {
 	}
 	return float64(sorted[idx]) / float64(time.Millisecond)
 }
+

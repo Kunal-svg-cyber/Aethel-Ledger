@@ -88,3 +88,4 @@ func TestHandler_ServesValidJSON(t *testing.T) {
 		t.Fatalf("unexpected decoded snapshot: %+v", out)
 	}
 }
+
