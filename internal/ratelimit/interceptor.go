@@ -8,9 +8,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// UnaryServerInterceptor rejects a request with codes.ResourceExhausted
-// once the limiter's rate is exceeded, otherwise passes it through
-// unchanged.
 func (l *Limiter) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -24,3 +21,4 @@ func (l *Limiter) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 		return handler(ctx, req)
 	}
 }
+

@@ -7,7 +7,7 @@ import (
 )
 
 func TestLimiter_AllowsBurstUpToCapacity(t *testing.T) {
-	l := NewLimiter(1, 5) // 1/sec sustained, burst of 5
+	l := NewLimiter(1, 5)
 
 	for i := 0; i < 5; i++ {
 		if !l.Allow() {
@@ -20,7 +20,7 @@ func TestLimiter_AllowsBurstUpToCapacity(t *testing.T) {
 }
 
 func TestLimiter_RefillsOverTime(t *testing.T) {
-	l := NewLimiter(100, 1) // fast refill for a quick test: 100/sec, burst 1
+	l := NewLimiter(100, 1)
 
 	if !l.Allow() {
 		t.Fatal("first call should be allowed (burst capacity 1)")
@@ -29,7 +29,7 @@ func TestLimiter_RefillsOverTime(t *testing.T) {
 		t.Fatal("immediate second call should be rejected — no time has passed to refill")
 	}
 
-	time.Sleep(20 * time.Millisecond) // at 100/sec, ~2 tokens should have refilled (capped at burst=1)
+	time.Sleep(20 * time.Millisecond)
 	if !l.Allow() {
 		t.Fatal("after waiting, a refilled token should allow the next call")
 	}
@@ -37,7 +37,7 @@ func TestLimiter_RefillsOverTime(t *testing.T) {
 
 func TestLimiter_NeverExceedsMaxTokens(t *testing.T) {
 	l := NewLimiter(1000, 3)
-	time.Sleep(50 * time.Millisecond) // plenty of time to refill far past burst if uncapped
+	time.Sleep(50 * time.Millisecond)
 
 	allowed := 0
 	for i := 0; i < 10; i++ {
@@ -52,7 +52,7 @@ func TestLimiter_NeverExceedsMaxTokens(t *testing.T) {
 
 func TestLimiter_ConcurrentAccessNeverAllowsMoreThanBurst(t *testing.T) {
 	const burst = 10
-	l := NewLimiter(0, burst) // rate=0: no refill during the test, isolates burst behavior
+	l := NewLimiter(0, burst)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -76,3 +76,4 @@ func TestLimiter_ConcurrentAccessNeverAllowsMoreThanBurst(t *testing.T) {
 		t.Fatalf("allowed %d of %d concurrent callers, want exactly burst=%d", allowedCount, numCallers, burst)
 	}
 }
+
