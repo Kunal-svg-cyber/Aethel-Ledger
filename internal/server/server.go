@@ -1,6 +1,4 @@
-// Package server implements the gRPC LedgerService, translating
-// protobuf requests into calls against the concurrency engine and
-// enforcing idempotency on Transfer.
+
 package server
 
 import (
@@ -17,36 +15,21 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
-// Flusher is satisfied by *wal.WAL. Defined here (rather than importing
-// wal directly) to keep this package's dependency graph one-directional
-// and to let tests supply a fake without an in-process WAL goroutine.
 type Flusher interface {
 	FlushNow(ctx context.Context) error
 }
 
-// LedgerServer implements ledgerv1.LedgerServiceServer.
 type LedgerServer struct {
 	ledgerv1.UnimplementedLedgerServiceServer
 	engine     *ledger.Engine
 	idempotent idempotency.Store
-	flusher    Flusher // nil is valid: skips the durable-ack wait
+	flusher    Flusher
 }
 
-// New constructs a LedgerServer. Pass nil for flusher to skip the
-// durable-ack wait (events are still eventually persisted by the WAL's
-// normal batching cadence; the RPC just won't wait for it).
 func New(engine *ledger.Engine, idempotent idempotency.Store, flusher Flusher) *LedgerServer {
 	return &LedgerServer{engine: engine, idempotent: idempotent, flusher: flusher}
 }
 
-// awaitDurable blocks until the WAL has flushed everything buffered so
-// far, giving the caller a durable-ack guarantee before it responds to
-// the client. A flush failure is logged but does not fail the RPC: the
-// in-memory engine (the source of truth for live balance) already
-// reflects the mutation, and failing the RPC here would risk the client
-// retrying a Deposit — which has no idempotency protection — into a
-// double-deposit. This mirrors the WAL's existing log-and-continue
-// philosophy for transient persistence failures.
 func (s *LedgerServer) awaitDurable(ctx context.Context) {
 	if s.flusher == nil {
 		return
@@ -141,3 +124,4 @@ func toGRPCError(err error) error {
 		return status.Error(codes.Internal, err.Error())
 	}
 }
+

@@ -17,8 +17,6 @@ func newTestServer() *LedgerServer {
 	return New(ledger.NewEngine(nil), idempotency.NewInMemoryStore(), nil)
 }
 
-// countingFlusher records how many times FlushNow was called, letting
-// tests confirm the server actually waits for durability.
 type countingFlusher struct {
 	calls int
 	err   error
@@ -53,9 +51,6 @@ func TestTransfer_CallsFlushNowOnlyOnANewMutationNotOnReplay(t *testing.T) {
 	}
 	callsAfterFirst := flusher.calls
 
-	// A replayed request (same idempotency key) returns the cached
-	// result without touching the engine again, so it must not trigger
-	// another flush.
 	if _, err := s.Transfer(ctx, req); err != nil {
 		t.Fatalf("replayed transfer failed: %v", err)
 	}
@@ -70,10 +65,6 @@ func TestTransfer_SucceedsEvenIfFlushNowFails(t *testing.T) {
 	ctx := context.Background()
 	_, _ = s.Deposit(ctx, &ledgerv1.DepositRequest{AccountId: "alice", Amount: 1000})
 
-	// The mutation already succeeded in-memory; a transient durability
-	// failure must not turn a successful transfer into an RPC error,
-	// since that could cause a client to retry a Deposit that has no
-	// idempotency protection.
 	resp, err := s.Transfer(ctx, &ledgerv1.TransferRequest{
 		FromAccountId: "alice", ToAccountId: "bob", Amount: 100, IdempotencyKey: "k1",
 	})
@@ -129,8 +120,6 @@ func TestTransfer_InsufficientFundsMapsToFailedPrecondition(t *testing.T) {
 	}
 }
 
-// TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending asserts the
-// same idempotency_key submitted twice moves funds exactly once.
 func TestTransfer_DuplicateKeyReplaysInsteadOfDoubleSpending(t *testing.T) {
 	s := newTestServer()
 	ctx := context.Background()
@@ -178,3 +167,4 @@ func TestGetBalance_UntouchedAccountReturnsZero(t *testing.T) {
 		t.Fatalf("balance = %d, want 0", resp.GetBalance())
 	}
 }
+
