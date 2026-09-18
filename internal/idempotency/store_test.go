@@ -48,8 +48,6 @@ func TestInMemoryStore_ReservedButUncommittedKeyIsFlaggedWithoutResult(t *testin
 	s := NewInMemoryStore()
 	ctx := context.Background()
 
-	// Simulates a concurrent in-flight request: the key has been
-	// reserved but Commit hasn't been called yet.
 	if _, _, err := s.CheckAndReserve(ctx, "key-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,10 +65,7 @@ func TestInMemoryStore_ReservedButUncommittedKeyIsFlaggedWithoutResult(t *testin
 }
 
 func TestInMemoryStore_DoesNotSurviveAcrossInstances(t *testing.T) {
-	// This is the documented limitation, made explicit as a test: a new
-	// InMemoryStore instance (simulating a process restart) has no
-	// knowledge of keys committed to a previous instance. PostgresStore
-	// exists specifically to close this gap.
+
 	first := NewInMemoryStore()
 	ctx := context.Background()
 	_, _, _ = first.CheckAndReserve(ctx, "key-1")
@@ -85,3 +80,4 @@ func TestInMemoryStore_DoesNotSurviveAcrossInstances(t *testing.T) {
 		t.Fatal("a fresh InMemoryStore should have no knowledge of a previous instance's committed keys")
 	}
 }
+
