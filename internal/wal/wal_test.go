@@ -9,7 +9,6 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
-// countingPublisher records every event it's asked to publish.
 type countingPublisher struct {
 	mu     sync.Mutex
 	events []ledger.Event
@@ -30,9 +29,7 @@ func (p *countingPublisher) count() int {
 
 func TestWAL_FlushNowForcesImmediateSynchronousFlush(t *testing.T) {
 	store := NewInMemoryStore()
-	// Batch size and interval both large enough that neither would ever
-	// trigger naturally within this test — only FlushNow should move
-	// this event into the store.
+
 	w := New(store, nil, Config{BatchSize: 1000, FlushInterval: time.Hour})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,9 +38,6 @@ func TestWAL_FlushNowForcesImmediateSynchronousFlush(t *testing.T) {
 
 	w.Events() <- ledger.Event{Seq: 1, Type: ledger.EventDeposit, Account: "alice", Amount: 10}
 
-	// Give the event a moment to actually reach the Run goroutine's
-	// select loop before we call FlushNow, so we're testing that
-	// FlushNow flushes what's buffered, not racing the send itself.
 	time.Sleep(20 * time.Millisecond)
 
 	if err := w.FlushNow(context.Background()); err != nil {
@@ -55,12 +49,6 @@ func TestWAL_FlushNowForcesImmediateSynchronousFlush(t *testing.T) {
 	}
 }
 
-// countingSlowStore counts how many times FlushBatch was called and
-// adds an artificial delay, simulating a real network round trip —
-// this is what makes the group-commit coalescing test meaningful: if
-// FlushNow triggered one round trip per caller, N concurrent callers
-// would take roughly N*delay; if they're correctly coalesced into one
-// flush, they complete in roughly one delay's worth of time.
 type countingSlowStore struct {
 	mu     sync.Mutex
 	events []ledger.Event
@@ -97,12 +85,6 @@ func (s *countingSlowStore) eventCount() int {
 	return len(s.events)
 }
 
-// TestWAL_FlushNowCoalescesConcurrentCallsIntoOneFlush is the direct
-// regression test for the bug this fix addresses: many concurrent
-// FlushNow callers must share a small number of underlying flushes, not
-// one each — otherwise concurrent load against a real network-latency
-// store serializes into a queueing pileup (this exact bug produced
-// 18-24 second p50 latency under 50-way concurrency against Supabase).
 func TestWAL_FlushNowCoalescesConcurrentCallsIntoOneFlush(t *testing.T) {
 	store := &countingSlowStore{delay: 100 * time.Millisecond}
 	w := New(store, nil, Config{BatchSize: 1000, FlushInterval: time.Hour})
@@ -131,10 +113,6 @@ func TestWAL_FlushNowCoalescesConcurrentCallsIntoOneFlush(t *testing.T) {
 		t.Fatalf("events persisted = %d, want %d", got, numCallers)
 	}
 
-	// The real assertion: if each caller triggered its own serialized
-	// round trip, 20 callers at 100ms each would take at least ~2s. With
-	// working group commit, this should complete in a small handful of
-	// flushes' worth of time.
 	if calls := store.callCount(); calls > 5 {
 		t.Fatalf("FlushBatch was called %d times for %d concurrent callers — expected coalescing into a small number of flushes", calls, numCallers)
 	}
@@ -143,10 +121,6 @@ func TestWAL_FlushNowCoalescesConcurrentCallsIntoOneFlush(t *testing.T) {
 	}
 }
 
-// TestWAL_FlushNowIncludesCallersOwnEvent proves the specific race this
-// fix closes: a flush triggered by FlushNow must include the event the
-// same caller sent moments earlier, not just whatever was already
-// batched before that send.
 func TestWAL_FlushNowIncludesCallersOwnEvent(t *testing.T) {
 	store := NewInMemoryStore()
 	w := New(store, nil, Config{BatchSize: 1000, FlushInterval: time.Hour})
@@ -169,9 +143,7 @@ func TestWAL_FlushNowIncludesCallersOwnEvent(t *testing.T) {
 func TestWAL_FlushNowRespectsContextCancellation(t *testing.T) {
 	store := NewInMemoryStore()
 	w := New(store, nil, DefaultConfig())
-	// Deliberately never call w.Run — so nothing will ever drain
-	// flushReq, and FlushNow must return via ctx cancellation instead of
-	// blocking forever.
+
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
@@ -283,3 +255,4 @@ func TestWAL_FlushesRemainingBatchOnShutdown(t *testing.T) {
 		t.Fatalf("events flushed on shutdown = %d, want 2", got)
 	}
 }
+

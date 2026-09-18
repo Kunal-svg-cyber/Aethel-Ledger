@@ -8,10 +8,6 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
-// TestPostgresStore_FlushAndDedup is an integration test requiring a
-// real Postgres connection; skipped unless DATABASE_URL is set. Run with:
-//
-//	DATABASE_URL="postgres://user:pass@host/db?sslmode=require" go test ./internal/wal/ -run TestPostgresStore -v
 func TestPostgresStore_FlushAndDedup(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -69,3 +65,4 @@ func TestPostgresStore_FlushAndDedup(t *testing.T) {
 
 	_, _ = store.db.ExecContext(ctx, "DELETE FROM ledger_events WHERE seq IN ($1, $2)", 999001, 999002)
 }
+
