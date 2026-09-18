@@ -115,3 +115,4 @@ func TestReadRange_FromBeginningUsesUnboundedStart(t *testing.T) {
 		t.Fatalf("expected unbounded start '-' when fromIDExclusive is empty, got %v", gotCmd)
 	}
 }
+

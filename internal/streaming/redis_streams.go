@@ -1,5 +1,4 @@
-// Package streaming implements the Redis Streams event bus over the
-// Upstash Redis REST API, using only net/http and encoding/json.
+
 package streaming
 
 import (
@@ -13,11 +12,8 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
 )
 
-// RedisStreamsBus publishes ledger events to a single Redis Stream and
-// reads them back in order. Satisfies wal.Publisher structurally
-// without importing wal, avoiding a dependency cycle.
 type RedisStreamsBus struct {
-	baseURL    string // e.g. https://your-db.upstash.io
+	baseURL    string
 	token      string
 	streamName string
 	client     *http.Client
@@ -32,7 +28,6 @@ func NewRedisStreamsBus(baseURL, token, streamName string) *RedisStreamsBus {
 	}
 }
 
-// Publish appends ev to the stream via XADD with an auto-generated ID.
 func (b *RedisStreamsBus) Publish(ctx context.Context, ev ledger.Event) error {
 	cmd := []interface{}{
 		"XADD", b.streamName, "*",
@@ -46,14 +41,11 @@ func (b *RedisStreamsBus) Publish(ctx context.Context, ev ledger.Event) error {
 	return err
 }
 
-// StreamEntry is one entry read back from the stream.
 type StreamEntry struct {
 	ID     string
 	Fields map[string]string
 }
 
-// ReadRange reads entries strictly after fromIDExclusive (pass "" to
-// read from the beginning) via XRANGE.
 func (b *RedisStreamsBus) ReadRange(ctx context.Context, fromIDExclusive string) ([]StreamEntry, error) {
 	start := "-"
 	if fromIDExclusive != "" {
@@ -101,8 +93,6 @@ type restResponse struct {
 	Error  string      `json:"error"`
 }
 
-// do sends one command to the Upstash REST API using its JSON-array
-// command form.
 func (b *RedisStreamsBus) do(ctx context.Context, cmd []interface{}) (interface{}, error) {
 	body, err := json.Marshal(cmd)
 	if err != nil {
@@ -131,3 +121,4 @@ func (b *RedisStreamsBus) do(ctx context.Context, cmd []interface{}) (interface{
 	}
 	return out.Result, nil
 }
+
