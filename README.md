@@ -11,7 +11,7 @@ A distributed, event-sourced financial ledger engine written in Go — built to 
 ## Highlights
 
 - **Deadlock-freedom is proven, not assumed.** Deterministic lock ordering makes a circular wait structurally impossible — verified by an adversarial test that would hang under a hard timeout if the property ever broke. [Details ↓](#the-concurrency-design)
-- **Three real bugs found and fixed under real load** — not staged for a demo. A queueing pileup that cut throughput to 5 req/sec, a subtle correctness race inside the fix for that bug, and a connection-pool exhaustion that caused silent request failures. Each one found by load-testing against a live remote Postgres instance, each with measured before/after numbers. [Details ↓](#real-bugs-found-and-fixed)
+- **Four real bugs found and fixed, not staged for a demo.** Three under real concurrent load — a queueing pileup that cut throughput to 5 req/sec, a subtle correctness race inside the fix for that bug, and a connection-pool exhaustion that caused silent request failures — plus a real security vulnerability (a publicly-exposed database table) caught by an automated scanner. Each one found independently, each with measured before/after evidence. [Details ↓](#real-bugs-found-and-fixed)
 - **Durability is verified, not claimed.** Balances and idempotency keys survive a full server restart — confirmed by integration tests that simulate exactly that, run against a live database. [Details ↓](#durability-and-persistence)
 - **Zero required external dependencies.** The entire system — gRPC API, concurrency engine, idempotency protection, WAL, audit worker — runs standalone with no database or cache. Postgres and Redis are fully implemented, tested, and optional. [Details ↓](#zero-dependency-mode)
 - **CI-gated on every push.** GitHub Actions runs `go vet`, `go build`, and `go test -race` on a Linux runner for every commit. [![CI](https://github.com/Kunal-svg-cyber/aethel-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/Kunal-svg-cyber/aethel-ledger/actions/workflows/ci.yml)
@@ -84,13 +84,14 @@ BenchmarkTransfer_Parallel   11,026,401 iters   107.1 ns/op   0 B/op   0 allocs/
 
 ## Real bugs found and fixed
 
-This is the part most projects never get to, because they never load-test hard enough to hit it. All three were found by running `cmd/loadgen` against a live remote Postgres instance under 50-way concurrency — not staged, not anticipated in advance.
+This is the part most projects never get to, because they never load-test — or get security-scanned — hard enough to hit it. The first three were found by running `cmd/loadgen` against a live remote Postgres instance under 50-way concurrency; the fourth was caught by Supabase's own automated security scanner. None were staged or anticipated in advance.
 
 | # | Bug | Before | After | Root cause & fix |
 |---|---|---|---|---|
 | 1 | Durable-ack queueing pileup | **5 req/sec**, 18.5s p50 latency | **60 req/sec**, 0.8s p50 latency | The first durable-ack implementation made every concurrent caller wait for its *own* network round trip to the database, serializing all 50 workers into one queue. Fixed with a group-commit pattern: concurrent callers share one flush instead of paying for their own. |
 | 2 | Notification-ordering race | A caller could be told "durable" before its own data was actually flushed | Waiters are snapshotted *before* the flush begins, closing the race | Found while building the fix for bug #1 — a test failed with "events persisted = 1, want 20" on the very first run, catching the bug before it ever shipped. |
 | 3 | Connection pool exhaustion | **103 of 376 requests failed** under concurrent load | **0 failures**, safe pool size found by experiment | Adding Postgres-backed idempotency opened a second, unbounded connection pool alongside the WAL's. Fixed by sharing one bounded pool; the safe size (15) was found by deliberately bracketing it — 10 was safe but slow, 30 was faster but reintroduced failures. |
+| 4 | Public table exposure (Row-Level Security disabled) | Both Postgres tables were readable, writable, and deletable by **anyone with the project URL**, via Supabase's auto-generated public REST API | **Zero public access**, application unaffected | Supabase exposes every `public`-schema table through a REST API separate from the app's direct Postgres connection. Neither table had Row-Level Security enabled, so the public API had full read/write/delete access to both — completely bypassing the concurrency engine, idempotency checks, and audit worker. Fixed with `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on both tables; the app's own connection is the table owner, so owner privileges bypass RLS by default and nothing in the application had to change. |
 
 Full technical detail on each, including the exact test names that catch a regression, is in [Durability and persistence](#durability-and-persistence) below.
 
@@ -151,6 +152,19 @@ These three runs happened on different days over the public internet, so the non
 ### Rate limiting
 
 [`internal/ratelimit/`](internal/ratelimit/) implements a token-bucket limiter using only the standard library — no dependency like `golang.org/x/time/rate`. Wired in as a second gRPC interceptor. Default: 5,000 req/sec sustained, burst of 2,000 — well above every load test measured against this project, so it guards against runaway traffic without being reachable by legitimate load. Tested for burst capacity, refill-over-time behavior, and correctness under 100 concurrent callers racing for a burst of 10.
+
+### Public table exposure via disabled Row-Level Security (bug #4, in detail)
+
+Supabase — and Postgres's `PostgREST` layer generally — auto-generates a public REST API for every table in the `public` schema, entirely separate from whatever connection an application uses to talk to Postgres directly. This project's Go server always connected directly over the Postgres wire protocol, so the application itself was never the exposure. But neither `ledger_events` nor `idempotency_keys` had Row-Level Security enabled, which meant the *auto-generated public API* — reachable by anyone with the project URL, no credentials required — had full read, write, and delete access to both tables. That's a real, external-attacker-reachable vulnerability: someone could have read every event and idempotency record, or deleted them outright, without ever touching the gRPC server, the concurrency engine, or the idempotency checks this whole project is built around.
+
+Caught by Supabase's own automated security scanner (`rls_disabled_in_public`), not by anything in this project's own test suite — worth being honest that this class of bug lives outside what unit and integration tests typically cover. Fixed with:
+
+```sql
+ALTER TABLE public.ledger_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.idempotency_keys ENABLE ROW LEVEL SECURITY;
+```
+
+This didn't require any application-side change: in Postgres, a table's owner bypasses Row-Level Security by default unless `FORCE ROW LEVEL SECURITY` is set, and the Go server's connection is the owner (it's the role that created both tables). Enabling RLS with zero policies defined denies all access to every other role — including the `anon`/`authenticated` roles the public API uses — while leaving the owning application's access completely untouched. Verified after the fact by confirming a full deposit/transfer/restart-recovery cycle still worked identically (unaffected reads and writes as the table owner) while Supabase's scanner separately confirmed the public exposure was closed.
 
 ## Load testing and observability
 
