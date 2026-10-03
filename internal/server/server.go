@@ -1,11 +1,13 @@
-
+// Package server implements the gRPC LedgerService, translating
+// protobuf requests into calls against the concurrency engine and
+// enforcing idempotency on Transfer.
 package server
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -13,29 +15,45 @@ import (
 	ledgerv1 "github.com/Kunal-svg-cyber/aethel-ledger/internal/genproto/ledger/v1"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/idempotency"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
+	"github.com/Kunal-svg-cyber/aethel-ledger/internal/tracing"
 )
 
+// Flusher is satisfied by *wal.WAL. Defined here (rather than importing
+// wal directly) to keep this package's dependency graph one-directional
+// and to let tests supply a fake without an in-process WAL goroutine.
 type Flusher interface {
 	FlushNow(ctx context.Context) error
 }
 
+// LedgerServer implements ledgerv1.LedgerServiceServer.
 type LedgerServer struct {
 	ledgerv1.UnimplementedLedgerServiceServer
 	engine     *ledger.Engine
 	idempotent idempotency.Store
-	flusher    Flusher
+	flusher    Flusher // nil is valid: skips the durable-ack wait
 }
 
+// New constructs a LedgerServer. Pass nil for flusher to skip the
+// durable-ack wait (events are still eventually persisted by the WAL's
+// normal batching cadence; the RPC just won't wait for it).
 func New(engine *ledger.Engine, idempotent idempotency.Store, flusher Flusher) *LedgerServer {
 	return &LedgerServer{engine: engine, idempotent: idempotent, flusher: flusher}
 }
 
+// awaitDurable blocks until the WAL has flushed everything buffered so
+// far, giving the caller a durable-ack guarantee before it responds to
+// the client. A flush failure is logged but does not fail the RPC: the
+// in-memory engine (the source of truth for live balance) already
+// reflects the mutation, and failing the RPC here would risk the client
+// retrying a Deposit — which has no idempotency protection — into a
+// double-deposit. This mirrors the WAL's existing log-and-continue
+// philosophy for transient persistence failures.
 func (s *LedgerServer) awaitDurable(ctx context.Context) {
 	if s.flusher == nil {
 		return
 	}
 	if err := s.flusher.FlushNow(ctx); err != nil {
-		log.Printf("server: durable-ack flush failed: %v", err)
+		slog.Error("durable-ack flush failed", "trace_id", tracing.FromContext(ctx), "error", err)
 	}
 }
 
@@ -43,6 +61,8 @@ func (s *LedgerServer) Deposit(ctx context.Context, req *ledgerv1.DepositRequest
 	if req.GetAccountId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "account_id is required")
 	}
+
+	slog.InfoContext(ctx, "handling Deposit", "trace_id", tracing.FromContext(ctx), "account_id", req.GetAccountId())
 
 	bal, err := s.engine.Deposit(ctx, req.GetAccountId(), req.GetAmount())
 	if err != nil {
@@ -65,6 +85,9 @@ func (s *LedgerServer) Transfer(ctx context.Context, req *ledgerv1.TransferReque
 		return nil, status.Error(codes.InvalidArgument, "idempotency_key is required")
 	}
 
+	traceID := tracing.FromContext(ctx)
+	slog.InfoContext(ctx, "handling Transfer", "trace_id", traceID, "from", req.GetFromAccountId(), "to", req.GetToAccountId())
+
 	if cached, alreadyCommitted, err := s.idempotent.CheckAndReserve(ctx, req.GetIdempotencyKey()); err != nil {
 		return nil, status.Errorf(codes.Internal, "idempotency check failed: %v", err)
 	} else if alreadyCommitted {
@@ -76,6 +99,7 @@ func (s *LedgerServer) Transfer(ctx context.Context, req *ledgerv1.TransferReque
 			return nil, status.Errorf(codes.Internal, "corrupt idempotency record: %v", err)
 		}
 		resp.Replayed = true
+		slog.InfoContext(ctx, "Transfer replayed from idempotency cache", "trace_id", traceID)
 		return &resp, nil
 	}
 
@@ -124,4 +148,3 @@ func toGRPCError(err error) error {
 		return status.Error(codes.Internal, err.Error())
 	}
 }
-
