@@ -16,6 +16,7 @@ A distributed, event-sourced financial ledger engine written in Go — built to 
 - **Zero required external dependencies.** The entire system — gRPC API, concurrency engine, idempotency protection, WAL, audit worker — runs standalone with no database or cache. Postgres and Redis are fully implemented, tested, and optional. [Details ↓](#zero-dependency-mode)
 - **CI-gated on every push.** GitHub Actions runs `go vet`, `go build`, and `go test -race` on a Linux runner for every commit. [![CI](https://github.com/Kunal-svg-cyber/aethel-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/Kunal-svg-cyber/aethel-ledger/actions/workflows/ci.yml)
 - **Honest about its own edges.** Documented, unglossed-over limitations at the bottom of this README — because knowing where your own work ends is part of the engineering. [Details ↓](#known-limitations)
+- **Structured, correlated logging.** Every request carries a trace ID through `log/slog`, text or JSON on demand — and idempotency keys now expire on a TTL instead of growing unbounded. [Details ↓](#structured-logging-and-request-tracing)
 
 ## Table of contents
 
@@ -28,6 +29,7 @@ A distributed, event-sourced financial ledger engine written in Go — built to 
 - [Tech stack](#tech-stack)
 - [gRPC API](#grpc-api)
 - [Running it](#running-it)
+- [Scaling beyond a single node](#scaling-beyond-a-single-node)
 - [Known limitations](#known-limitations)
 
 ## Why this exists
@@ -195,6 +197,18 @@ Latency p99:     2.9854ms
 
 Zero failures across 691K requests, independently confirmed by both the load generator's client-side count and the server's own `/stats` interceptor. See [Durable-ack tradeoff](#durable-ack-tradeoff-bug-1-in-detail) for what changes with full durability enabled — the two numbers measure genuinely different things, not a regression.
 
+### Structured logging and request tracing
+
+All logging goes through [`log/slog`](internal/logging/logging.go) (Go's standard-library structured logger) rather than the plain `log` package — text output by default for readable local development, switchable to JSON with `LOG_FORMAT=json` for log-aggregation pipelines that expect machine-parseable fields.
+
+Every incoming gRPC call gets a random trace ID attached to its context by [`internal/tracing`](internal/tracing/tracing.go), via a dedicated interceptor that runs first in the chain. `Deposit` and `Transfer` log that trace ID alongside the relevant account IDs at the start of each call, so every log line from a single request — including a replayed idempotency hit — can be correlated back to one `trace_id` value, even under concurrent load from many simultaneous callers.
+
+**Honest about where this stops:** the trace ID is generated and logged at the gRPC boundary only — it is not currently threaded through into WAL events or Redis Stream messages, which would need a `trace_id` column added to the event schema. Wiring a real distributed-tracing backend (OpenTelemetry exporting to Grafana Tempo or Honeycomb, both of which have a free tier reachable without any local install) is a natural extension of this same context-propagation mechanism, not yet built here.
+
+### Idempotency key expiry
+
+Both idempotency `Store` implementations now prune records older than a configurable TTL (24 hours by default) via a background goroutine that runs hourly, using the `ExpirableStore` interface — `DeleteExpired(ctx, cutoff)`. Postgres uses the `created_at` column already present in the schema (no migration needed); the in-memory store tracks a creation timestamp per entry. Without this, both stores grew unbounded for the life of the data; an expired key is treated as brand-new if reused, which is the correct behavior — a key old enough to be pruned is, by definition, old enough that no legitimate client retry is still depending on it.
+
 ## Tech stack
 
 | Layer | Choice | Why |
@@ -204,6 +218,7 @@ Zero failures across 691K requests, independently confirmed by both the load gen
 | Idempotency & event bus | Redis Streams / Postgres (Upstash / any Postgres) | Append-only semantics with consumer groups; REST-only client, zero extra dependency |
 | Durable storage | PostgreSQL (tested against Supabase) | Async-batched WAL sink; connection pool tuned by a real bracketing experiment |
 | Rate limiting | Custom stdlib token bucket | No external dependency; tested for burst, refill, and concurrency correctness |
+| Logging & tracing | `log/slog` + custom trace-ID context propagation | Structured, correlatable logs with zero external dependency; text or JSON on demand |
 | CI/CD | GitHub Actions | `go vet`, `go build`, `go test -race` on every push, on a Linux runner with a real 64-bit toolchain |
 
 ## gRPC API
@@ -245,16 +260,28 @@ go run ./cmd/server
 
 See [TESTING.md](TESTING.md) for the complete command reference, including the full restart-recovery and load-test walkthrough against a real database.
 
+## Scaling beyond a single node
+
+This is a single-node system today — the design below is how it would extend, not something implemented and running. Worth stating plainly rather than leaving as an implied gap.
+
+**Sharding accounts across nodes.** The engine's own internal sharding (32 buckets, FNV hash of account ID) is already the right primitive — it just needs to operate at the cluster level instead of only within one process. Consistent hashing over account ID would route a given account to one designated ledger node, the same way requests are routed to in-process shards today. The deterministic lock-ordering proof holds unchanged *within* a node; a transfer between two accounts on *different* nodes becomes a distributed transaction, which is the actual hard problem this introduces.
+
+**Cross-node transfers.** A transfer where the sender and receiver live on different nodes can't use a single in-process mutex pair. Two realistic approaches: a two-phase commit across the two owning nodes (simpler, lower throughput, blocks on the slower participant), or restructuring the transfer itself as two independent, node-local events — a debit event on the sender's node and a credit event on the receiver's node — reconciled by the audit worker's existing invariant check rather than enforced synchronously. The second is more in keeping with this project's event-sourced design, at the cost of a brief window where the global invariant is temporarily unbalanced between the two local commits.
+
+**Replication and failover.** Each node's event log is a natural fit for Raft — a well-understood, more operationally tractable choice than Paxos for this shape of problem (log replication with a single leader, not general consensus on arbitrary values). Postgres's own write-ahead log replication, or a Raft-backed store like etcd fronting the event log, would give each shard a leader plus followers that can take over on failure; the WAL/audit-worker split already in this codebase (one component appending events, a separate component independently verifying them) maps naturally onto a leader/follower replication model without a fundamental redesign.
+
+**What doesn't need to change:** the per-account deterministic lock ordering, the event-sourced persistence model, and the independent audit-worker verification all remain correct building blocks at a larger scale — the work is in routing and cross-shard coordination, not in redesigning the core correctness argument this project is built around.
+
 ## Known limitations
 
 Kept here deliberately, rather than glossed over — knowing the edges of your own work is part of the engineering:
 
-- Idempotency keys never expire, so both stores grow unbounded for the life of the data. The server also doesn't validate that a replayed key's request body matches the original.
+- The server doesn't validate that a replayed idempotency key's request body matches the original — a client that reuses a key for a genuinely different transfer gets back the first result silently rather than an error.
 - No authentication, authorization, or TLS on the gRPC endpoint, and `/stats` is unauthenticated — fine for local development, not for production.
-- Single-node: no partitioning or horizontal scaling of the engine itself.
+- Single-node: see [Scaling beyond a single node](#scaling-beyond-a-single-node) above for the design, not yet the implementation.
+- Request tracing stops at the gRPC boundary (see [Structured logging and request tracing](#structured-logging-and-request-tracing)) — it doesn't yet extend into WAL events or Redis Stream messages, and there's no real distributed-tracing backend wired up, only context-propagated trace IDs in logs.
 - The audit worker logs on invariant drift but doesn't page, alert, or halt traffic.
 - WAL flush failures are logged and the batch is dropped, with no retry-with-backoff or local spill-to-disk yet.
-- Structured logging (`slog` with JSON output) would replace the current plain `log` calls for production use.
 - No containerized deployment yet — Cloud Run or an equivalent platform supporting long-lived gRPC servers is the natural fit (a serverless request/response platform like Vercel is not, since this is a stateful, connection-holding server).
 
 ## License
