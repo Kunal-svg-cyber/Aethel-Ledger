@@ -17,9 +17,11 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/audit"
+	"github.com/Kunal-svg-cyber/aethel-ledger/internal/auth"
 	ledgerv1 "github.com/Kunal-svg-cyber/aethel-ledger/internal/genproto/ledger/v1"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/idempotency"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ledger"
@@ -28,6 +30,7 @@ import (
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/ratelimit"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/server"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/streaming"
+	"github.com/Kunal-svg-cyber/aethel-ledger/internal/tlsconfig"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/tracing"
 	"github.com/Kunal-svg-cyber/aethel-ledger/internal/wal"
 )
@@ -97,11 +100,32 @@ func main() {
 	// internal/ratelimit for why this number was chosen.
 	limiter := ratelimit.NewLimiter(5000, 2000)
 
-	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		tracing.UnaryServerInterceptor(), // attaches a trace ID first, so later interceptors and handlers can log it
-		recorder.UnaryServerInterceptor(),
-		limiter.UnaryServerInterceptor(),
-	))
+	serverOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(
+			tracing.UnaryServerInterceptor(),
+			recorder.UnaryServerInterceptor(),
+			limiter.UnaryServerInterceptor(),
+			auth.UnaryServerInterceptor(os.Getenv("API_KEY")),
+		),
+	}
+	if os.Getenv("API_KEY") != "" {
+		slog.Info("API key authentication enabled")
+	} else {
+		slog.Warn("API_KEY not set: authentication disabled")
+	}
+	certFile, keyFile := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")
+	if certFile != "" || keyFile != "" {
+		tlsCfg, err := tlsconfig.Load(certFile, keyFile)
+		if err != nil {
+			slog.Error("failed to load TLS configuration", "error", err)
+			os.Exit(1)
+		}
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+		slog.Info("TLS enabled", "min_version", "1.2")
+	} else {
+		slog.Warn("TLS_CERT_FILE/TLS_KEY_FILE not set: serving plaintext")
+	}
+	grpcServer := grpc.NewServer(serverOpts...)
 	ledgerv1.RegisterLedgerServiceServer(grpcServer, ledgerServer)
 	reflection.Register(grpcServer)
 
