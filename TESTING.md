@@ -163,3 +163,54 @@ go test ./internal/idempotency/ -run TestInMemoryStore_DeleteExpired -v
 ```
 
 These exercise the same `DeleteExpired` logic the background goroutine calls, using artificial timestamps instead of waiting in real time.
+
+## 16. Authentication and TLS
+
+Both features are off by default. Note that `cmd/loadgen` does not send an API key or use TLS, so run load tests with them disabled.
+
+Generate a local certificate (do not commit the output):
+
+```powershell
+go run ./cmd/gencert
+```
+
+Start the server with TLS and an API key:
+
+```powershell
+$env:API_KEY = "local-test-key"
+$env:TLS_CERT_FILE = "cert.pem"
+$env:TLS_KEY_FILE = "key.pem"
+go run ./cmd/server
+```
+
+In Terminal B, a call without a key must be rejected:
+
+```powershell
+grpcurl -cacert cert.pem localhost:50051 list
+```
+
+Expected: `Unauthenticated` (the reflection call is also protected). With the key it succeeds:
+
+```powershell
+grpcurl -cacert cert.pem -H "x-api-key: local-test-key" localhost:50051 list
+```
+
+A wrong key must fail:
+
+```powershell
+grpcurl -cacert cert.pem -H "x-api-key: wrong" localhost:50051 list
+```
+
+Plaintext against a TLS server must fail to connect:
+
+```powershell
+grpcurl -plaintext localhost:50051 list
+```
+
+Unit tests: `go test ./internal/auth/ ./internal/tlsconfig/`.
+
+Clear the variables afterwards:
+
+```powershell
+Remove-Item Env:API_KEY, Env:TLS_CERT_FILE, Env:TLS_KEY_FILE
+```

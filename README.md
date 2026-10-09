@@ -29,6 +29,7 @@ A distributed, event-sourced financial ledger engine written in Go — built to 
 - [Tech stack](#tech-stack)
 - [gRPC API](#grpc-api)
 - [Running it](#running-it)
+- [Authentication and TLS](#authentication-and-tls)
 - [Scaling beyond a single node](#scaling-beyond-a-single-node)
 - [Known limitations](#known-limitations)
 
@@ -260,6 +261,19 @@ go run ./cmd/server
 
 See [TESTING.md](TESTING.md) for the complete command reference, including the full restart-recovery and load-test walkthrough against a real database.
 
+## Authentication and TLS
+
+Both are opt-in via environment variables, so the zero-dependency mode keeps working unchanged.
+
+| Variable | Effect |
+| --- | --- |
+| `API_KEY` | When set, every RPC must carry a matching `x-api-key` metadata header; otherwise it is rejected with `Unauthenticated`. Compared in constant time (`crypto/subtle`). |
+| `TLS_CERT_FILE`, `TLS_KEY_FILE` | When set, the gRPC listener serves TLS (1.2 minimum). Setting only one is a startup error. |
+
+For local testing, `go run ./cmd/gencert` writes a self-signed `cert.pem` / `key.pem` (ECDSA P-256, valid for `localhost`). Do not commit them. See [TESTING.md](TESTING.md#16-authentication-and-tls) for the full walkthrough.
+
+The auth interceptor runs last in the chain, after tracing, metrics and rate limiting, so rejected requests are still traced and counted.
+
 ## Scaling beyond a single node
 
 This is a single-node system today — the design below is how it would extend, not something implemented and running. Worth stating plainly rather than leaving as an implied gap.
@@ -277,7 +291,7 @@ This is a single-node system today — the design below is how it would extend, 
 Kept here deliberately, rather than glossed over — knowing the edges of your own work is part of the engineering:
 
 - The server doesn't validate that a replayed idempotency key's request body matches the original — a client that reuses a key for a genuinely different transfer gets back the first result silently rather than an error.
-- No authentication, authorization, or TLS on the gRPC endpoint, and `/stats` is unauthenticated — fine for local development, not for production.
+- Authentication is a single shared API key with no per-client identity or authorization, and `/stats` is unauthenticated. TLS uses certificates you supply; there is no automatic rotation.
 - Single-node: see [Scaling beyond a single node](#scaling-beyond-a-single-node) above for the design, not yet the implementation.
 - Request tracing stops at the gRPC boundary (see [Structured logging and request tracing](#structured-logging-and-request-tracing)) — it doesn't yet extend into WAL events or Redis Stream messages, and there's no real distributed-tracing backend wired up, only context-propagated trace IDs in logs.
 - The audit worker logs on invariant drift but doesn't page, alert, or halt traffic.
