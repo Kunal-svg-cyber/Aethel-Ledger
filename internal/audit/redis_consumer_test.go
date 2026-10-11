@@ -81,4 +81,3 @@ func TestRedisConsumer_SkipsMalformedEntriesWithoutStoppingTheLoop(t *testing.T)
 		t.Fatalf("alice = %d, want 500", got)
 	}
 }
-

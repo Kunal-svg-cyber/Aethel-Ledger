@@ -14,4 +14,3 @@ func (p *LocalPublisher) Publish(_ context.Context, ev ledger.Event) error {
 	p.Worker.Apply(ev)
 	return nil
 }
-

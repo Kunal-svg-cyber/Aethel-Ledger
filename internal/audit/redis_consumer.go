@@ -72,4 +72,3 @@ func parseEvent(fields map[string]string) (ledger.Event, error) {
 		Amount:         amount,
 	}, nil
 }
-

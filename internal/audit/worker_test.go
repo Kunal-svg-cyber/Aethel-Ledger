@@ -69,4 +69,3 @@ func TestParseEvent_RejectsMalformedAmount(t *testing.T) {
 		t.Fatal("expected an error for a non-numeric amount field")
 	}
 }
-

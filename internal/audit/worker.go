@@ -1,4 +1,3 @@
-
 package audit
 
 import (
@@ -49,4 +48,3 @@ func (w *Worker) Balance(id string) int64 {
 	defer w.mu.Unlock()
 	return w.balances[id]
 }
-
