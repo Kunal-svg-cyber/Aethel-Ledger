@@ -85,22 +85,33 @@ func TestPostgresStore_DeleteExpiredRemovesOldKeysOnly(t *testing.T) {
 	}
 	defer store.Close()
 
-	testKey := "test-key-ttl-cleanup"
-	defer func() {
-		_, _ = store.db.ExecContext(ctx, "DELETE FROM idempotency_keys WHERE key = $1", testKey)
-	}()
+	const oldKey, recentKey = "test-ttl-old", "test-ttl-recent"
+	cleanup := func() {
+		_, _ = store.db.ExecContext(ctx, "DELETE FROM idempotency_keys WHERE key IN ($1, $2)", oldKey, recentKey)
+	}
+	cleanup()
+	defer cleanup()
 
-	if _, _, err := store.CheckAndReserve(ctx, testKey); err != nil {
-		t.Fatalf("reserve: %v", err)
+	if _, err := store.db.ExecContext(ctx,
+		"INSERT INTO idempotency_keys (key, created_at) VALUES ($1, now() - interval '48 hours')", oldKey); err != nil {
+		t.Fatalf("insert old key: %v", err)
+	}
+	if _, _, err := store.CheckAndReserve(ctx, recentKey); err != nil {
+		t.Fatalf("reserve recent key: %v", err)
 	}
 
-	// A cutoff far in the future should remove the key we just created.
-	removed, err := store.DeleteExpired(ctx, time.Now().Add(time.Hour))
-	if err != nil {
+	if _, err := store.DeleteExpired(ctx, time.Now().Add(-24*time.Hour)); err != nil {
 		t.Fatalf("delete expired: %v", err)
 	}
-	if removed < 1 {
-		t.Fatalf("expected at least 1 row removed, got %d", removed)
+
+	var n int
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT count(*) FROM idempotency_keys WHERE key = $1", oldKey).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("old key should be removed (count=%d, err=%v)", n, err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT count(*) FROM idempotency_keys WHERE key = $1", recentKey).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("recent key must survive (count=%d, err=%v)", n, err)
 	}
 }
 
