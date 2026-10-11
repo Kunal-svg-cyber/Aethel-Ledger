@@ -1,4 +1,3 @@
-
 package streaming
 
 import (
@@ -121,4 +120,3 @@ func (b *RedisStreamsBus) do(ctx context.Context, cmd []interface{}) (interface{
 	}
 	return out.Result, nil
 }
-
