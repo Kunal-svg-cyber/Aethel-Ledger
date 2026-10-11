@@ -168,3 +168,24 @@ func TestGetBalance_UntouchedAccountReturnsZero(t *testing.T) {
 	}
 }
 
+func TestTransfer_FailedTransferReleasesKeySoRetryCanSucceed(t *testing.T) {
+	s := newTestServer()
+	ctx := context.Background()
+
+	req := &ledgerv1.TransferRequest{
+		FromAccountId: "alice", ToAccountId: "bob", Amount: 500, IdempotencyKey: "retry-key",
+	}
+	if _, err := s.Transfer(ctx, req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("first attempt: got %v, want FailedPrecondition", status.Code(err))
+	}
+
+	_, _ = s.Deposit(ctx, &ledgerv1.DepositRequest{AccountId: "alice", Amount: 1000})
+
+	resp, err := s.Transfer(ctx, req)
+	if err != nil {
+		t.Fatalf("retry with same key after funding failed: %v", err)
+	}
+	if resp.Replayed {
+		t.Fatal("retry executed a fresh transfer; it must not be flagged as a replay")
+	}
+}

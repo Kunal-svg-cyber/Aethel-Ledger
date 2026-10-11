@@ -57,6 +57,19 @@ func (s *LedgerServer) awaitDurable(ctx context.Context) {
 	}
 }
 
+// releaseKey frees a reservation whose request failed before mutating
+// anything, so the client can retry with the same key. Uses a context
+// detached from the request so a cancelled call still releases.
+func (s *LedgerServer) releaseKey(ctx context.Context, key string) {
+	r, ok := s.idempotent.(idempotency.Releaser)
+	if !ok {
+		return
+	}
+	if err := r.Release(context.WithoutCancel(ctx), key); err != nil {
+		slog.Error("failed to release idempotency key", "trace_id", tracing.FromContext(ctx), "error", err)
+	}
+}
+
 func (s *LedgerServer) Deposit(ctx context.Context, req *ledgerv1.DepositRequest) (*ledgerv1.DepositResponse, error) {
 	if req.GetAccountId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "account_id is required")
@@ -104,6 +117,7 @@ func (s *LedgerServer) Transfer(ctx context.Context, req *ledgerv1.TransferReque
 	}
 
 	if err := s.engine.Transfer(ctx, req.GetFromAccountId(), req.GetToAccountId(), req.GetAmount()); err != nil {
+		s.releaseKey(ctx, req.GetIdempotencyKey())
 		return nil, toGRPCError(err)
 	}
 
