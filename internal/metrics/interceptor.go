@@ -20,4 +20,3 @@ func (r *Recorder) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 		return resp, err
 	}
 }
-

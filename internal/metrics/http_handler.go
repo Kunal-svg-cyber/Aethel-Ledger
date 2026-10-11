@@ -13,4 +13,3 @@ func (r *Recorder) Handler() http.Handler {
 		}
 	})
 }
-

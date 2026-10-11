@@ -89,3 +89,20 @@ func TestHandler_ServesValidJSON(t *testing.T) {
 	}
 }
 
+func TestRecorder_LatencySamplesAreBounded(t *testing.T) {
+	r := NewRecorder()
+	total := maxLatencySamples*3 + 7
+	for i := 0; i < total; i++ {
+		r.Record("/svc/Method", time.Millisecond, false)
+	}
+	r.mu.Lock()
+	stored := len(r.methods["/svc/Method"].latencies)
+	r.mu.Unlock()
+	if stored != maxLatencySamples {
+		t.Fatalf("stored %d samples, want cap %d", stored, maxLatencySamples)
+	}
+	snap := r.Snapshot()
+	if snap[0].Success != int64(total) {
+		t.Fatalf("success = %d, want exact count %d", snap[0].Success, total)
+	}
+}

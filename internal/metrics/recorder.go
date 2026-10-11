@@ -1,4 +1,3 @@
-
 package metrics
 
 import (
@@ -12,10 +11,15 @@ type Recorder struct {
 	methods map[string]*methodStats
 }
 
+// maxLatencySamples bounds per-method memory: percentiles are computed
+// over the most recent samples, while success/failure counts stay exact.
+const maxLatencySamples = 10000
+
 type methodStats struct {
 	success   int64
 	failure   int64
 	latencies []time.Duration
+	next      int
 }
 
 func NewRecorder() *Recorder {
@@ -36,7 +40,12 @@ func (r *Recorder) Record(method string, dur time.Duration, failed bool) {
 	} else {
 		m.success++
 	}
-	m.latencies = append(m.latencies, dur)
+	if len(m.latencies) < maxLatencySamples {
+		m.latencies = append(m.latencies, dur)
+		return
+	}
+	m.latencies[m.next] = dur
+	m.next = (m.next + 1) % maxLatencySamples
 }
 
 type Snapshot struct {
@@ -83,4 +92,3 @@ func percentileMillis(sorted []time.Duration, p float64) float64 {
 	}
 	return float64(sorted[idx]) / float64(time.Millisecond)
 }
-
