@@ -14,4 +14,3 @@ type Event struct {
 	CounterAccount string
 	Amount         int64
 }
-

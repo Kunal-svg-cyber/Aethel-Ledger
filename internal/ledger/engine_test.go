@@ -284,3 +284,40 @@ func BenchmarkTransfer_Parallel(b *testing.B) {
 	})
 }
 
+func TestEngine_NeverDropsEventsWhenChannelIsSlow(t *testing.T) {
+	events := make(chan Event, 1)
+	e := NewEngine(events)
+	const n = 200
+
+	received := make(chan int, 1)
+	go func() {
+		count := 0
+		for range events {
+			count++
+			time.Sleep(time.Millisecond)
+			if count == n {
+				break
+			}
+		}
+		received <- count
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = e.Deposit(context.Background(), "acct", 1)
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case got := <-received:
+		if got != n {
+			t.Fatalf("received %d events, want %d", got, n)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for events")
+	}
+}

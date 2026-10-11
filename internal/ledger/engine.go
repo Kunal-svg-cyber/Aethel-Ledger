@@ -1,4 +1,3 @@
-
 package ledger
 
 import (
@@ -186,14 +185,13 @@ func (e *Engine) nextSeq() int64 {
 	return atomic.AddInt64(&e.seq, 1)
 }
 
+// emit blocks when the event channel is full, applying backpressure to
+// callers instead of silently discarding a committed mutation.
 func (e *Engine) emit(ev Event) {
 	if e.events == nil {
 		return
 	}
-	select {
-	case e.events <- ev:
-	default:
-	}
+	e.events <- ev
 }
 
 func wouldOverflowAdd(current, amount int64) bool {
@@ -205,4 +203,3 @@ func wouldOverflowAdd(current, amount int64) bool {
 	}
 	return false
 }
-
