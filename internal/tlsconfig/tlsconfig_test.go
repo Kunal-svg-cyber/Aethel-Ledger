@@ -26,6 +26,9 @@ func TestLoadMissingFile(t *testing.T) {
 func TestLoadGeneratedCert(t *testing.T) {
 	dir := t.TempDir()
 	gen := filepath.Join(dir, "gen")
+	if runtime.GOOS == "windows" {
+		gen += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", gen, "../../cmd/gencert")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Skipf("cannot build gencert: %v\n%s", err, out)
