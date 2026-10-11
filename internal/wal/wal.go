@@ -1,4 +1,3 @@
-
 package wal
 
 import (
@@ -146,4 +145,3 @@ func (w *WAL) Run(ctx context.Context) {
 }
 
 func (w *WAL) Done() <-chan struct{} { return w.done }
-

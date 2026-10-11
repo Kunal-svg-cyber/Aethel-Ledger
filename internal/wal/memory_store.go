@@ -34,4 +34,3 @@ func (s *InMemoryStore) All() []ledger.Event {
 func (s *InMemoryStore) LoadAll(_ context.Context) ([]ledger.Event, error) {
 	return s.All(), nil
 }
-

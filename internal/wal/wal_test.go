@@ -255,4 +255,3 @@ func TestWAL_FlushesRemainingBatchOnShutdown(t *testing.T) {
 		t.Fatalf("events flushed on shutdown = %d, want 2", got)
 	}
 }
-

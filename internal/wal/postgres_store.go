@@ -104,4 +104,3 @@ func (s *PostgresStore) LoadAll(ctx context.Context) ([]ledger.Event, error) {
 	}
 	return events, nil
 }
-

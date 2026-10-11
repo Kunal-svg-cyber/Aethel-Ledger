@@ -65,4 +65,3 @@ func TestPostgresStore_FlushAndDedup(t *testing.T) {
 
 	_, _ = store.db.ExecContext(ctx, "DELETE FROM ledger_events WHERE seq IN ($1, $2)", 999001, 999002)
 }
-
