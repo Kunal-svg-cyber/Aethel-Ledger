@@ -100,15 +100,17 @@ func main() {
 	// internal/ratelimit for why this number was chosen.
 	limiter := ratelimit.NewLimiter(5000, 2000)
 
+	apiKey := os.Getenv("API_KEY")
 	serverOpts := []grpc.ServerOption{
+		grpc.ChainStreamInterceptor(auth.StreamServerInterceptor(apiKey)),
 		grpc.ChainUnaryInterceptor(
 			tracing.UnaryServerInterceptor(),
 			recorder.UnaryServerInterceptor(),
 			limiter.UnaryServerInterceptor(),
-			auth.UnaryServerInterceptor(os.Getenv("API_KEY")),
+			auth.UnaryServerInterceptor(apiKey),
 		),
 	}
-	if os.Getenv("API_KEY") != "" {
+	if apiKey != "" {
 		slog.Info("API key authentication enabled")
 	} else {
 		slog.Warn("API_KEY not set: authentication disabled")
