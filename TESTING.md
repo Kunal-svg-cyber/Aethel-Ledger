@@ -189,7 +189,7 @@ In Terminal B, a call without a key must be rejected:
 grpcurl -cacert cert.pem localhost:50051 list
 ```
 
-Expected: `Unauthenticated` (the reflection call is also protected). With the key it succeeds:
+Expected: `Unauthenticated` (reflection is a streaming call and is covered by the stream interceptor). With the key it succeeds:
 
 ```powershell
 grpcurl -cacert cert.pem -H "x-api-key: local-test-key" localhost:50051 list

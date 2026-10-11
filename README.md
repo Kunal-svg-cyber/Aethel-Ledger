@@ -6,8 +6,6 @@
 
 A distributed, event-sourced financial ledger engine written in Go — built to demonstrate correct, high-throughput concurrency control for money movement at the level a real payments backend requires, and load-tested against a live remote database until it broke, so the fixes are real.
 
-**Demo video:** _link here_
-
 ## Highlights
 
 - **Deadlock-freedom is proven, not assumed.** Deterministic lock ordering makes a circular wait structurally impossible — verified by an adversarial test that would hang under a hard timeout if the property ever broke. [Details ↓](#the-concurrency-design)
