@@ -1,4 +1,3 @@
-
 package ledgerv1
 
 import (
@@ -11,7 +10,6 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 type LedgerServiceClient interface {
-
 	Deposit(ctx context.Context, in *DepositRequest, opts ...grpc.CallOption) (*DepositResponse, error)
 
 	Transfer(ctx context.Context, in *TransferRequest, opts ...grpc.CallOption) (*TransferResponse, error)
@@ -55,7 +53,6 @@ func (c *ledgerServiceClient) GetBalance(ctx context.Context, in *GetBalanceRequ
 }
 
 type LedgerServiceServer interface {
-
 	Deposit(context.Context, *DepositRequest) (*DepositResponse, error)
 
 	Transfer(context.Context, *TransferRequest) (*TransferResponse, error)
@@ -160,4 +157,3 @@ var _LedgerService_serviceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "ledger.proto",
 }
-

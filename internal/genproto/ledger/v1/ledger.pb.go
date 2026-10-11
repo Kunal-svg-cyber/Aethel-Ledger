@@ -1,4 +1,3 @@
-
 package ledgerv1
 
 import (
@@ -9,7 +8,6 @@ import (
 )
 
 const (
-
 	_ = protoimpl.EnforceVersion(20 - protoimpl.MinVersion)
 
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
@@ -571,4 +569,3 @@ func file_ledger_proto_init() {
 	file_ledger_proto_goTypes = nil
 	file_ledger_proto_depIdxs = nil
 }
-
