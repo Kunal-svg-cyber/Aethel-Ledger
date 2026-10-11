@@ -1,4 +1,3 @@
-
 package ratelimit
 
 import (
@@ -42,4 +41,3 @@ func (l *Limiter) Allow() bool {
 	}
 	return false
 }
-

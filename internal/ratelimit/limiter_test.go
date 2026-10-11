@@ -76,4 +76,3 @@ func TestLimiter_ConcurrentAccessNeverAllowsMoreThanBurst(t *testing.T) {
 		t.Fatalf("allowed %d of %d concurrent callers, want exactly burst=%d", allowedCount, numCallers, burst)
 	}
 }
-
