@@ -165,3 +165,27 @@ var (
 	_ Store          = (*InMemoryStore)(nil)
 	_ Store          = (*PostgresStore)(nil)
 )
+
+func TestInMemoryStore_ReleaseFreesUncommittedKeyOnly(t *testing.T) {
+	s := NewInMemoryStore()
+	ctx := context.Background()
+
+	if _, _, err := s.CheckAndReserve(ctx, "failed-req"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Release(ctx, "failed-req"); err != nil {
+		t.Fatal(err)
+	}
+	if _, already, _ := s.CheckAndReserve(ctx, "failed-req"); already {
+		t.Fatal("released key should be reservable again")
+	}
+
+	_, _, _ = s.CheckAndReserve(ctx, "done-req")
+	_ = s.Commit(ctx, "done-req", []byte("result"))
+	if err := s.Release(ctx, "done-req"); err != nil {
+		t.Fatal(err)
+	}
+	if res, already, _ := s.CheckAndReserve(ctx, "done-req"); !already || string(res) != "result" {
+		t.Fatal("release must not remove a committed key")
+	}
+}

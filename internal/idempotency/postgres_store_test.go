@@ -103,3 +103,38 @@ func TestPostgresStore_DeleteExpiredRemovesOldKeysOnly(t *testing.T) {
 		t.Fatalf("expected at least 1 row removed, got %d", removed)
 	}
 }
+
+func TestPostgresStore_ReleaseFreesUncommittedKeyOnly(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer s.Close()
+	if err := s.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const open, done = "test-release-open", "test-release-done"
+	defer func() {
+		_, _ = s.db.ExecContext(ctx, "DELETE FROM idempotency_keys WHERE key IN ($1, $2)", open, done)
+	}()
+
+	_, _, _ = s.CheckAndReserve(ctx, open)
+	if err := s.Release(ctx, open); err != nil {
+		t.Fatal(err)
+	}
+	if _, already, _ := s.CheckAndReserve(ctx, open); already {
+		t.Fatal("released key should be reservable again")
+	}
+
+	_, _, _ = s.CheckAndReserve(ctx, done)
+	_ = s.Commit(ctx, done, []byte("r"))
+	_ = s.Release(ctx, done)
+	if _, already, _ := s.CheckAndReserve(ctx, done); !already {
+		t.Fatal("release must not remove a committed key")
+	}
+}

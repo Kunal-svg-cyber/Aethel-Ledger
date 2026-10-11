@@ -105,6 +105,16 @@ func (s *PostgresStore) Commit(ctx context.Context, key string, result []byte) e
 	return nil
 }
 
+// Release drops an uncommitted reservation. Committed keys are untouched.
+func (s *PostgresStore) Release(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM idempotency_keys WHERE key = $1 AND committed = FALSE", key)
+	if err != nil {
+		return fmt.Errorf("idempotency: release: %w", err)
+	}
+	return nil
+}
+
 // DeleteExpired removes every record created before cutoff. Satisfies
 // ExpirableStore. Uses the created_at column already present in the
 // schema from the very first version of this table — no migration

@@ -32,6 +32,13 @@ type ExpirableStore interface {
 	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
+// Releaser is implemented by Store backends that can discard a reservation
+// that was never committed, so a request that failed before producing a
+// result can be retried with the same key.
+type Releaser interface {
+	Release(ctx context.Context, key string) error
+}
+
 // InMemoryStore is a thread-safe, process-local Store with no
 // cross-instance coordination and no durability across a restart — see
 // PostgresStore for the durable alternative.
@@ -69,6 +76,16 @@ func (s *InMemoryStore) Commit(_ context.Context, key string, result []byte) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state[key] = &entry{committed: true, result: result, createdAt: time.Now()}
+	return nil
+}
+
+// Release drops an uncommitted reservation. Committed keys are untouched.
+func (s *InMemoryStore) Release(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.state[key]; ok && !e.committed {
+		delete(s.state, key)
+	}
 	return nil
 }
 
