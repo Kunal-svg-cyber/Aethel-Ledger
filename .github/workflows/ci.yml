@@ -21,3 +21,18 @@ jobs:
         run: go build ./...
       - name: Test (race detector)
         run: go test -race ./...
+
+  container:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container image
+        run: docker build -t aethel-ledger:ci .
+      - name: Container starts and listens on PORT
+        run: |
+          docker run -d --name ledger -e PORT=8080 aethel-ledger:ci
+          sleep 5
+          docker logs ledger
+          docker logs ledger 2>&1 | grep -q 'addr=:8080'
+          docker rm -f ledger
