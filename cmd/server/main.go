@@ -36,9 +36,6 @@ import (
 )
 
 const (
-	listenAddr = ":50051"
-	statsAddr  = ":8080"
-
 	// idempotencyKeyTTL bounds how long an idempotency record is kept.
 	// Long enough that any realistic client retry (network blip, load
 	// balancer resend) still finds its original key; short enough that
@@ -94,7 +91,12 @@ func main() {
 	go logInvariantPeriodically(ctx, auditWorker)
 
 	recorder := metrics.NewRecorder()
-	go serveStats(recorder)
+	listenAddr, statsAddr := resolveAddrs(os.Getenv)
+	if statsAddr != "" {
+		go serveStats(recorder, statsAddr)
+	} else {
+		slog.Info("stats endpoint disabled")
+	}
 
 	// A generous default: 5,000 req/sec sustained, burst of 2,000 — see
 	// internal/ratelimit for why this number was chosen.
@@ -267,10 +269,10 @@ func cleanupExpiredIdempotencyKeys(ctx context.Context, store idempotency.Expira
 
 // serveStats exposes per-RPC counts and latency percentiles as JSON at
 // http://localhost:8080/stats.
-func serveStats(recorder *metrics.Recorder) {
+func serveStats(recorder *metrics.Recorder, statsAddr string) {
 	mux := http.NewServeMux()
 	mux.Handle("/stats", recorder.Handler())
-	slog.Info("stats endpoint listening", "addr", "http://localhost"+statsAddr+"/stats")
+	slog.Info("stats endpoint listening", "addr", statsAddr, "path", "/stats")
 	if err := http.ListenAndServe(statsAddr, mux); err != nil {
 		slog.Error("stats server error", "error", err)
 	}
