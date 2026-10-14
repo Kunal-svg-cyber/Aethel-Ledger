@@ -1,2 +1,28 @@
-cert.pem
-key.pem
+# secrets and local configuration
+.env
+.env.*
+*.pem
+*.key
+
+# local test artifacts
+deposit.json
+transfer.json
+balance.json
+
+# build output
+bin/
+*.exe
+*.test
+*.out
+coverage.*
+
+# editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# archives and private notes
+*.zip
+INTERVIEW_PREP.md
+DEMO_SCRIPT.md

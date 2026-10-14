@@ -27,7 +27,9 @@ A distributed, event-sourced financial ledger engine written in Go — built to 
 - [Tech stack](#tech-stack)
 - [gRPC API](#grpc-api)
 - [Running it](#running-it)
+- [Project layout](#project-layout)
 - [Authentication and TLS](#authentication-and-tls)
+- [Deployment](#deployment)
 - [Scaling beyond a single node](#scaling-beyond-a-single-node)
 - [Known limitations](#known-limitations)
 
@@ -259,6 +261,24 @@ go run ./cmd/server
 
 See [TESTING.md](TESTING.md) for the complete command reference, including the full restart-recovery and load-test walkthrough against a real database.
 
+## Project layout
+
+```
+cmd/server      gRPC gateway entry point
+cmd/loadgen     load generator
+cmd/gencert     local self-signed certificate generator
+internal/ledger       sharded engine, events, replay
+internal/wal    write-ahead log and stores (memory, Postgres)
+internal/idempotency  duplicate-request protection
+internal/server gRPC service implementation
+internal/audit  invariant verification and event consumers
+internal/auth, tlsconfig, ratelimit, metrics, tracing, logging
+internal/streaming  Redis Streams event bus
+proto           protobuf definitions
+```
+
+Contributions are described in [CONTRIBUTING.md](CONTRIBUTING.md), security reporting in [SECURITY.md](SECURITY.md), and release history in [CHANGELOG.md](CHANGELOG.md).
+
 ## Authentication and TLS
 
 Both are opt-in via environment variables, so the zero-dependency mode keeps working unchanged.
@@ -271,6 +291,10 @@ Both are opt-in via environment variables, so the zero-dependency mode keeps wor
 For local testing, `go run ./cmd/gencert` writes a self-signed `cert.pem` / `key.pem` (ECDSA P-256, valid for `localhost`). Do not commit them. See [TESTING.md](TESTING.md#16-authentication-and-tls) for the full walkthrough.
 
 The auth interceptor runs last in the chain, after tracing, metrics and rate limiting, so rejected requests are still traced and counted.
+
+## Deployment
+
+A multi-stage `Dockerfile` builds a static binary into a distroless image, and CI builds that image and starts it on every push. [DEPLOY.md](DEPLOY.md) walks through deploying to Google Cloud Run from Cloud Shell, with `DATABASE_URL` and `API_KEY` held in Secret Manager. The repository ships the deployment path; it is not kept running as a public service. The service must run as a single instance because the engine keeps state in memory; the reasoning is in DEPLOY.md and in [Scaling beyond a single node](#scaling-beyond-a-single-node).
 
 ## Scaling beyond a single node
 
@@ -294,7 +318,7 @@ Kept here deliberately, rather than glossed over — knowing the edges of your o
 - Request tracing stops at the gRPC boundary (see [Structured logging and request tracing](#structured-logging-and-request-tracing)) — it doesn't yet extend into WAL events or Redis Stream messages, and there's no real distributed-tracing backend wired up, only context-propagated trace IDs in logs.
 - The audit worker logs on invariant drift but doesn't page, alert, or halt traffic.
 - WAL flush failures are logged and the batch is dropped, with no retry-with-backoff or local spill-to-disk yet.
-- No containerized deployment yet — Cloud Run or an equivalent platform supporting long-lived gRPC servers is the natural fit (a serverless request/response platform like Vercel is not, since this is a stateful, connection-holding server).
+- Deployment is single-instance by design (see [Deployment](#deployment)); a serverless request/response platform like Vercel is not a fit for a stateful, connection-holding server.
 
 ## License
 
