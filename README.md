@@ -50,10 +50,10 @@ Client (grpcurl / load generator)
    -> WAL (local append-only log, batched async flush)
         -> Postgres (durable event log; tested against Supabase)
         -> Redis Streams (XADD) -> Audit Worker
-           (XREADGROUP, recomputes sum(debits) - sum(credits))
+           (XRANGE polling, checks balances against total deposits)
 ```
 
-**Streaming layer note:** the event bus uses Redis Streams (`XADD`/`XREADGROUP` via the Upstash Redis REST API) rather than Kafka. Upstash's managed Kafka offering was deprecated in September 2024 and discontinued in March 2025; Redis Streams provides the same append-only-log-with-consumer-groups semantics the audit worker needs, on infrastructure that remains supported.
+**Streaming layer note:** the event bus uses Redis Streams via the Upstash Redis REST API rather than Kafka. Upstash's managed Kafka offering was deprecated in September 2024 and discontinued in March 2025; Redis Streams provides the append-only log the audit worker needs, on infrastructure that remains supported. Events are published with `XADD`. The audit consumer polls the stream every 2 seconds with `XRANGE`, keeping the last-seen entry ID as an exclusive cursor, so it does not use consumer groups. When no Redis is configured, the audit worker runs in-process and receives events directly.
 
 ## The concurrency design
 
@@ -216,7 +216,7 @@ Both idempotency `Store` implementations now prune records older than a configur
 |---|---|---|
 | Language | Go | `sync` primitives, goroutines, native concurrency tooling (`-race`, `pprof`) |
 | Transport | gRPC + Protocol Buffers | Binary framing over HTTP/2, avoids JSON serialization overhead |
-| Idempotency & event bus | Redis Streams / Postgres (Upstash / any Postgres) | Append-only semantics with consumer groups; REST-only client, zero extra dependency |
+| Idempotency & event bus | Redis Streams / Postgres (Upstash / any Postgres) | Append-only log, cursor-based reads; REST-only client, zero extra dependency |
 | Durable storage | PostgreSQL (tested against Supabase) | Async-batched WAL sink; connection pool tuned by a real bracketing experiment |
 | Rate limiting | Custom stdlib token bucket | No external dependency; tested for burst, refill, and concurrency correctness |
 | Logging & tracing | `log/slog` + custom trace-ID context propagation | Structured, correlatable logs with zero external dependency; text or JSON on demand |
